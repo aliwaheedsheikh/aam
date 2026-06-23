@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+backend/node_modules/
+backend/dist/
+backend/.env
+backend/prisma/dev.db
+vite.log
+vite.stdout.log
+vite.stderr.log

@@ -1,0 +1,419 @@
+            {/* Event Details Tab */}
+            {activeTab === 'event' && (
+              <div className="space-y-6 py-6">
+                {/* Venue and Space Selection - TOP (Already selected from calendar) */}
+                <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Building2 className="size-5 text-blue-600" />
+                    <h4 className="font-semibold text-blue-900">Venue & Space (Pre-selected from Calendar)</h4>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* Venue Selection - LOCKED/READ-ONLY when coming from calendar */}
+                    <div>
+                      <Label className="text-sm mb-2 flex items-center gap-2">
+                        <Building2 className="size-4" />
+                        Venue
+                      </Label>
+                      <Select 
+                        value={venueId} 
+                        onValueChange={setVenueId}
+                        disabled={!!quickBookData?.venueId}
+                      >
+                        <SelectTrigger className={quickBookData?.venueId ? 'bg-gray-100' : ''}>
+                          <SelectValue placeholder="Select venue" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {venues.map((venue) => (
+                            <SelectItem key={venue.id} value={venue.id}>
+                              {venue.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {quickBookData?.venueId && (
+                        <p className="text-xs text-blue-600 mt-1">✓ Selected from calendar</p>
+                      )}
+                    </div>
+
+                    {/* Prime Space Selection */}
+                    <div>
+                      <Label className="text-sm mb-2">
+                        Prime Space
+                      </Label>
+                      <Select 
+                        value={primeSpaceId} 
+                        onValueChange={(value) => {
+                          setPrimeSpaceId(value);
+                          // Clear sub space when prime space is selected
+                          setSubSpaceId('');
+                        }}
+                        disabled={!venueId || (!!quickBookData?.spaceId && !!quickBookData?.isPrime)}
+                      >
+                        <SelectTrigger className={(quickBookData?.spaceId && quickBookData?.isPrime) ? 'bg-gray-100' : ''}>
+                          <SelectValue placeholder="Select prime space" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableSpaces.map((space) => (
+                            <SelectItem key={space.id} value={space.id}>
+                              {space.name} (Cap: {space.capacity})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {quickBookData?.spaceId && quickBookData?.isPrime && (
+                        <p className="text-xs text-blue-600 mt-1">✓ Selected from calendar</p>
+                      )}
+                    </div>
+
+                    {/* Sub Space Selection */}
+                    <div>
+                      <Label className="text-sm mb-2">
+                        Sub Space (Optional)
+                      </Label>
+                      <Select 
+                        value={subSpaceId} 
+                        onValueChange={setSubSpaceId}
+                        disabled={!primeSpaceId || (!!quickBookData?.spaceId && !quickBookData?.isPrime)}
+                      >
+                        <SelectTrigger className={(quickBookData?.spaceId && !quickBookData?.isPrime) ? 'bg-gray-100' : ''}>
+                          <SelectValue placeholder="Select sub space" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedPrimeSpace?.subSpaces.map((subSpace) => (
+                            <SelectItem key={subSpace.id} value={subSpace.id}>
+                              {subSpace.name} (Cap: {subSpace.capacity})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {quickBookData?.spaceId && !quickBookData?.isPrime && (
+                        <p className="text-xs text-blue-600 mt-1">✓ Selected from calendar</p>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-3">
+                    💡 Select Prime Space for full venue booking, or Prime Space + Sub Space for partial booking
+                  </p>
+                </div>
+
+                {/* Event Title and Special Notes - SIDE BY SIDE */}
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Event Title */}
+                  <div>
+                    <Label htmlFor="eventTitle" className="text-sm mb-2 flex items-center gap-2">
+                      <FileText className="size-4" />
+                      Event Title
+                    </Label>
+                    <Input
+                      id="eventTitle"
+                      value={eventTitle}
+                      onChange={(e) => setEventTitle(e.target.value)}
+                      placeholder="e.g., Ali & Sara Wedding, One Day Workshop"
+                      className="text-lg"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Enter couple names for weddings or event description
+                    </p>
+                  </div>
+
+                  {/* Special Notes */}
+                  <div>
+                    <Label htmlFor="notes" className="text-sm mb-2 flex items-center gap-2">
+                      <MessageSquare className="size-4" />
+                      Special Notes
+                    </Label>
+                    <Textarea
+                      id="notes"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Any special requirements or notes..."
+                      rows={3}
+                      className="resize-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Date and Time - Single Row */}
+                <div>
+                  <div className="mb-2">
+                    <p className="text-xs text-gray-500">
+                      Select Event Time to auto-fill start/end times (can be adjusted manually)
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-4 gap-4">
+                    <div>
+                      <Label htmlFor="eventDate" className="text-sm mb-2 flex items-center gap-2">
+                        <Calendar className="size-4" />
+                        Event Date
+                      </Label>
+                      <Input
+                        id="eventDate"
+                        type="date"
+                        value={eventDate}
+                        onChange={(e) => setEventDate(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="eventTime" className="text-sm mb-2 flex items-center gap-2">
+                        <Clock className="size-4" />
+                        Event Time
+                      </Label>
+                      <Select value={eventTime} onValueChange={handleEventTimeChange}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Lunch/Dinner" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="lunch">Lunch</SelectItem>
+                          <SelectItem value="dinner">Dinner</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label htmlFor="startTime" className="text-sm mb-2 flex items-center gap-2">
+                        <Clock className="size-4" />
+                        Start Time
+                      </Label>
+                      <TimePicker
+                        value={startTime}
+                        onChange={setStartTime}
+                        placeholder="Select start time"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="endTime" className="text-sm mb-2 flex items-center gap-2">
+                        <Clock className="size-4" />
+                        End Time
+                      </Label>
+                      <TimePicker
+                        value={endTime}
+                        onChange={setEndTime}
+                        placeholder="Select end time"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Guest Count with Partition - NEW LAYOUT */}
+                <div className="border-2 border-purple-200 rounded-lg p-4 bg-purple-50">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Users className="size-5 text-purple-600" />
+                    <h4 className="font-semibold text-purple-900">Guest Information</h4>
+                  </div>
+                  
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* Total Guest Count */}
+                    <div>
+                      <Label htmlFor="guestCount" className="text-sm mb-2 flex items-center gap-2">
+                        <Users className="size-4" />
+                        Confirmed Guest Count
+                      </Label>
+                      <Input
+                        id="guestCount"
+                        type="number"
+                        value={guestCount}
+                        onChange={(e) => setGuestCount(e.target.value)}
+                        placeholder="150"
+                        className="text-lg font-semibold"
+                      />
+                    </div>
+
+                    {/* Partition Checkbox */}
+                    <div className="flex items-end pb-2">
+                      <label className="flex items-center gap-3 cursor-pointer bg-white border-2 border-gray-300 rounded-lg px-4 py-3 hover:border-purple-400 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={partition}
+                          onChange={(e) => setPartition(e.target.checked)}
+                          className="size-5"
+                        />
+                        <div>
+                          <span className="text-sm font-semibold block">Partition Required</span>
+                          <span className="text-xs text-gray-500">Separate ladies & gents</span>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Event Type */}
+                    <div>
+                      <Label htmlFor="eventType" className="text-sm mb-2">
+                        Event Type
+                      </Label>
+                      <Select value={eventType} onValueChange={setEventType}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select event type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="wedding">Wedding</SelectItem>
+                          <SelectItem value="engagement">Engagement</SelectItem>
+                          <SelectItem value="birthday">Birthday Party</SelectItem>
+                          <SelectItem value="corporate">Corporate Event</SelectItem>
+                          <SelectItem value="conference">Conference</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Ladies and Gents Count - Show when Partition is checked */}
+                  {partition && (
+                    <div className="mt-4 pt-4 border-t-2 border-purple-200">
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Ladies Count */}
+                        <div>
+                          <Label htmlFor="ladiesCount" className="text-sm mb-2 flex items-center gap-2">
+                            <Users className="size-4 text-pink-600" />
+                            Ladies Count
+                          </Label>
+                          <Input
+                            id="ladiesCount"
+                            type="number"
+                            value={ladiesCount}
+                            onChange={(e) => handleLadiesCountChange(e.target.value)}
+                            min="0"
+                            max={guestCount}
+                            placeholder="Enter ladies count"
+                            className="text-lg font-semibold text-pink-700 border-pink-300 focus:border-pink-500"
+                          />
+                        </div>
+
+                        {/* Gents Count - Auto-calculated */}
+                        <div>
+                          <Label htmlFor="gentsCount" className="text-sm mb-2 flex items-center gap-2">
+                            <Users className="size-4 text-blue-600" />
+                            Gents Count <span className="text-xs text-gray-500 font-normal">(Auto-calculated)</span>
+                          </Label>
+                          <Input
+                            id="gentsCount"
+                            type="number"
+                            value={gentsCount}
+                            disabled
+                            className="bg-gray-100 cursor-not-allowed text-lg font-semibold text-blue-700"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Split Ratio Display */}
+                      {totalGuests > 0 && (ladies > 0 || gents > 0) && (
+                        <div className="mt-3 bg-white border-2 border-purple-300 rounded-lg p-3">
+                          <p className="text-sm text-gray-700 mb-2 font-semibold">Guest Split Ratio:</p>
+                          <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-4 h-4 rounded-full bg-pink-500"></div>
+                              <span className="text-base font-bold text-pink-700">{ladiesPercentage}% Ladies</span>
+                              <span className="text-sm text-gray-600">({ladies} guests)</span>
+                            </div>
+                            <div className="text-gray-400 font-bold">/</div>
+                            <div className="flex items-center gap-2">
+                              <div className="w-4 h-4 rounded-full bg-blue-500"></div>
+                              <span className="text-base font-bold text-blue-700">{gentsPercentage}% Gents</span>
+                              <span className="text-sm text-gray-600">({gents} guests)</span>
+                            </div>
+                          </div>
+                          
+                          {/* Validation Message */}
+                          {ladies + gents !== totalGuests && totalGuests > 0 && (
+                            <div className="mt-2 bg-yellow-50 border border-yellow-300 rounded px-3 py-2 flex items-center gap-2">
+                              <span className="text-yellow-600">⚠️</span>
+                              <span className="text-xs text-yellow-800 font-medium">
+                                Total: {ladies + gents} / {totalGuests} guests
+                                {ladies + gents < totalGuests && ` (${totalGuests - (ladies + gents)} remaining)`}
+                              </span>
+                            </div>
+                          )}
+                          
+                          {/* Success Message */}
+                          {ladies + gents === totalGuests && totalGuests > 0 && (
+                            <div className="mt-2 bg-green-50 border border-green-300 rounded px-3 py-2 flex items-center gap-2">
+                              <span className="text-green-600">✓</span>
+                              <span className="text-xs text-green-800 font-medium">
+                                Perfect! All {totalGuests} guests accounted for.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Wedding Specific Fields */}
+                {eventType === 'wedding' && (
+                  <>
+                    <div className="border-t pt-4 mt-4">
+                      <h4 className="font-medium mb-3">Wedding Details</h4>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="brideName" className="text-sm mb-2">
+                            Bride Name
+                          </Label>
+                          <Input
+                            id="brideName"
+                            value={brideName}
+                            onChange={(e) => setBrideName(e.target.value)}
+                            placeholder="Bride's full name"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="groomName" className="text-sm mb-2">
+                            Groom Name
+                          </Label>
+                          <Input
+                            id="groomName"
+                            value={groomName}
+                            onChange={(e) => setGroomName(e.target.value)}
+                            placeholder="Groom's full name"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={brideRoomReserved}
+                            onChange={(e) => setBrideRoomReserved(e.target.checked)}
+                          />
+                          <span>Bride Room Reserved</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="expectedDinnerTime" className="text-sm mb-2">
+                        Expected Dinner Time
+                      </Label>
+                      <TimePicker
+                        value={expectedDinnerTime}
+                        onChange={setExpectedDinnerTime}
+                        placeholder="Select dinner time"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Status */}
+                <div>
+                  <Label className="text-sm mb-2">Booking Status</Label>
+                  <Select value={status} onValueChange={(value: BookingStatus) => setStatus(value)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="confirmed">🔴 Confirmed</SelectItem>
+                      <SelectItem value="tentative">🟡 Tentative</SelectItem>
+                      <SelectItem value="available">🟢 Available</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Save Button for Event Tab */}
+                <div className="flex justify-end pt-4 border-t mt-6">
+                  <Button 
+                    onClick={() => handleSave(status)}
+                    className="bg-green-600 hover:bg-green-700 flex items-center gap-2"
+                  >
+                    <Check className="size-4" />
+                    Save Information
+                  </Button>
+                </div>
+              </div>
+            )}

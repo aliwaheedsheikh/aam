@@ -1,0 +1,1708 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  GENERAL_MANAGER
+  FRONT_OFFICE
+  ACCOUNTS
+  BANQUET_CHEF
+  RESTAURANT_CHEF
+  HR_MANAGER
+  ADMIN
+}
+
+enum SpaceType {
+  PRIME
+  SUB
+}
+
+enum BookingStatus {
+  DRAFT
+  PRICE_QUOTED
+  TENTATIVE
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+  LOST_SPACE_TAKEN
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
+}
+
+enum BookingSpaceAssignmentType {
+  PRIME_FULL
+  SUB_ONLY
+}
+
+enum ServiceType {
+  VENUE_BOOKING
+  OUTDOOR_CATERING
+  FOOD_SUPPLY
+  RENTAL_SERVICES
+  MIXED_PACKAGE
+}
+
+enum ServiceStatus {
+  TENTATIVE
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+model User {
+  id           String             @id @default(cuid())
+  email        String             @unique
+  username     String?            @unique
+  passwordHash String
+  fullName     String
+  role         UserRole
+  isActive     Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  bookings     Booking[]          @relation("BookingCreatedBy")
+  auditLogs    AuditLog[]
+  permissions  UserModuleAccess[]
+}
+
+model UserModuleAccess {
+  id         String   @id @default(cuid())
+  userId     String
+  moduleKey  String
+  canView    Boolean  @default(false)
+  canCreate  Boolean  @default(false)
+  canEdit    Boolean  @default(false)
+  canDelete  Boolean  @default(false)
+  canApprove Boolean  @default(false)
+  canExport  Boolean  @default(false)
+  canManage  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleKey])
+  @@index([moduleKey])
+}
+
+model Customer {
+  id           String    @id @default(cuid())
+  fullName     String
+  phone        String    @unique
+  email        String?
+  address      String?
+  customerType String?
+  companyName  String?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  bookings     Booking[]
+}
+
+model Venue {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  name      String
+  location  String?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  spaces    Space[]
+  bookings  Booking[]
+}
+
+model Space {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  venueId       String
+  parentSpaceId String?
+  name          String
+  type          SpaceType
+  capacity      Int?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  venue         Venue     @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  parentSpace   Space?    @relation("SpaceHierarchy", fields: [parentSpaceId], references: [id])
+  childSpaces   Space[]   @relation("SpaceHierarchy")
+}
+
+model Booking {
+  id                String                        @id @default(cuid())
+  bookingNumber     String                        @unique
+  externalId        String?                       @unique
+  customerId        String
+  venueId           String
+  createdById       String?
+  status            BookingStatus
+  paymentStatus     PaymentStatus                 @default(PENDING)
+  eventType         String?
+  bookingSource     String?
+  notes             String?
+  guestCount        Int
+  eventDate         DateTime
+  startTime         String
+  endTime           String
+  totalAmount       Decimal?                      @db.Decimal(12, 2)
+  paidAmount        Decimal?                      @db.Decimal(12, 2)
+  balanceAmount     Decimal?                      @db.Decimal(12, 2)
+  sourcePayload     Json?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+  customer          Customer                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  venue             Venue                         @relation(fields: [venueId], references: [id], onDelete: Restrict)
+  createdBy         User?                         @relation("BookingCreatedBy", fields: [createdById], references: [id])
+  spaceAssignments  BookingSpaceAssignment[]
+  payments          Payment[]
+  additionalCharges ReservationAdditionalCharge[]
+  auditLogs         AuditLog[]
+}
+
+model AdditionalChargeType {
+  id                 String                        @id @default(cuid())
+  name               String                        @unique
+  defaultRate        Decimal                       @default(0) @map("default_rate") @db.Decimal(12, 2)
+  unitType           String                        @default("fixed") @map("unit_type")
+  defaultDescription String                        @default("") @map("default_description")
+  isActive           Boolean                       @default(true) @map("is_active")
+  createdAt          DateTime                      @default(now()) @map("created_at")
+  updatedAt          DateTime                      @updatedAt @map("updated_at")
+  reservationCharges ReservationAdditionalCharge[]
+
+  @@map("additional_charge_types")
+}
+
+model ReservationAdditionalCharge {
+  id                     String                @id @default(cuid())
+  reservationId          String                @map("reservation_id")
+  additionalChargeTypeId String?               @map("additional_charge_type_id")
+  customChargeName       String?               @map("custom_charge_name")
+  description            String                @default("")
+  quantity               Decimal               @default(1) @db.Decimal(12, 2)
+  rate                   Decimal               @default(0) @db.Decimal(12, 2)
+  total                  Decimal               @default(0) @db.Decimal(12, 2)
+  notes                  String?
+  createdAt              DateTime              @default(now()) @map("created_at")
+  updatedAt              DateTime              @updatedAt @map("updated_at")
+  reservation            Booking               @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  additionalChargeType   AdditionalChargeType? @relation(fields: [additionalChargeTypeId], references: [id], onDelete: SetNull)
+
+  @@index([reservationId])
+  @@index([additionalChargeTypeId])
+  @@map("reservation_additional_charges")
+}
+
+model BookingSpaceAssignment {
+  id             String                     @id @default(cuid())
+  bookingId      String
+  venueId        String
+  primeSpaceId   String
+  subSpaceId     String?
+  assignmentType BookingSpaceAssignmentType
+  usageLabel     String?
+  sortOrder      Int                        @default(0)
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
+  booking        Booking                    @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([venueId, primeSpaceId])
+  @@index([venueId, subSpaceId])
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  bookingId String
+  amount    Decimal  @db.Decimal(12, 2)
+  method    String
+  reference String?
+  paidAt    DateTime
+  notes     String?
+  createdAt DateTime @default(now())
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  bookingId  String?
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id])
+  booking    Booking? @relation(fields: [bookingId], references: [id])
+}
+
+model MasterDataRecord {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ServiceBooking {
+  id            String        @id @default(cuid())
+  externalId    String        @unique
+  serviceType   ServiceType
+  status        ServiceStatus
+  eventDate     DateTime
+  startTime     String
+  endTime       String
+  customerName  String
+  contactNumber String
+  guestCount    Int
+  notes         String?
+  totalAmount   Decimal?      @db.Decimal(12, 2)
+  paidAmount    Decimal?      @db.Decimal(12, 2)
+  balanceAmount Decimal?      @db.Decimal(12, 2)
+  sourcePayload Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model ProcurementVendor {
+  id                  String                 @id @default(cuid())
+  externalId          String                 @unique
+  vendorName          String
+  vendorCode          String?
+  vendorTypeExternalId String?
+  vendorTypeId        String?                @map("vendor_type_id")
+  supplyCategoryExternalIds Json?
+  vendorCategories    Json?
+  contactPerson       String?
+  phone               String?
+  email               String?
+  address             String?
+  city                String?
+  paymentTerms        String?
+  creditLimit         Decimal?               @db.Decimal(12, 2)
+  supplyScope         String?                @map("supply_scope")
+  defaultLeadTimeDays Int?                   @map("default_lead_time_days")
+  orderCutoffTime     String?                @map("order_cutoff_time")
+  deliveryDays        Json?                  @map("delivery_days")
+  status              String
+  taxId               String?
+  inactiveReason      String?
+  inactiveSince       DateTime?
+  pricingFormulas     Json?
+  currentBalance      Decimal?               @db.Decimal(12, 2)
+  totalPurchases      Decimal?               @db.Decimal(12, 2)
+  lastPurchaseDate    DateTime?
+  createdBy           String?
+  sourceCreatedAt     DateTime?
+  sourceUpdatedAt     DateTime?
+  sourcePayload       Json?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  vendorType          VendorType?            @relation(fields: [vendorTypeId], references: [id], onDelete: SetNull)
+  supplyCategories    VendorSupplyCategory[]
+  itemMappings        VendorItemMapping[]
+}
+
+model VendorType {
+  id        String              @id
+  name      String
+  status    String              @default("active")
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+  vendors   ProcurementVendor[]
+
+  @@map("vendor_types")
+}
+
+model SupplyCategory {
+  id        String                 @id
+  name      String
+  status    String                 @default("active")
+  createdAt DateTime               @default(now()) @map("created_at")
+  updatedAt DateTime               @updatedAt @map("updated_at")
+  vendors   VendorSupplyCategory[]
+
+  @@map("supply_categories")
+}
+
+model PurchaseCategory {
+  id           String          @id
+  name         String
+  status       String          @default("active")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  kitchenItems InventoryItem[]
+
+  @@map("purchase_categories")
+}
+
+model ProcurementVendorType {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  code            String?
+  name            String
+  status          String   @default("active")
+  sortOrder       Int?
+  createdBy       String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ProcurementSupplyCategory {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  code            String?
+  name            String
+  status          String   @default("active")
+  sortOrder       Int?
+  createdBy       String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ProcurementPurchaseCategory {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  code            String?
+  name            String
+  status          String   @default("active")
+  sortOrder       Int?
+  createdBy       String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model VendorSupplyCategory {
+  vendorId         String            @map("vendor_id")
+  supplyCategoryId String            @map("supply_category_id")
+  vendor           ProcurementVendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  supplyCategory   SupplyCategory    @relation(fields: [supplyCategoryId], references: [id], onDelete: Cascade)
+
+  @@id([vendorId, supplyCategoryId])
+  @@index([supplyCategoryId])
+  @@map("vendor_supply_categories")
+}
+
+model VendorItemMapping {
+  vendorId      String            @map("vendor_id")
+  kitchenItemId String            @map("kitchen_item_id")
+  isPreferred   Boolean           @default(false) @map("is_preferred")
+  leadTimeDays  Int?              @map("lead_time_days")
+  moq           Decimal?          @db.Decimal(14, 3)
+  lastRate      Decimal?          @map("last_rate") @db.Decimal(14, 4)
+  contractRate  Decimal?          @map("contract_rate") @db.Decimal(14, 4)
+  status        String            @default("active")
+  notes         String?
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  vendor        ProcurementVendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  kitchenItem   InventoryItem     @relation(fields: [kitchenItemId], references: [id], onDelete: Cascade)
+
+  @@id([vendorId, kitchenItemId])
+  @@index([kitchenItemId])
+  @@map("vendor_item_mappings")
+}
+
+model InventoryItem {
+  id                        String              @id @default(cuid())
+  externalId                String              @unique
+  itemName                  String
+  itemCode                  String?
+  category                  String
+  purchaseCategoryId        String?             @map("purchase_category_id")
+  purchaseUnit              String
+  issueUnit                 String
+  conversionFactor          Decimal             @db.Decimal(14, 4)
+  storeLocation             String
+  currentStock              Decimal             @db.Decimal(14, 3)
+  reorderLevel              Decimal             @db.Decimal(14, 3)
+  lastPurchaseRate          Decimal             @db.Decimal(14, 4)
+  ratePerUnit               Decimal?            @db.Decimal(14, 4)
+  preferredVendorExternalId String?             @map("preferred_vendor")
+  legacyPreferredVendorExternalId String?       @map("preferredVendorExternalId")
+  alternateVendorExternalIds Json?
+  leadTimeDays              Int?
+  minimumOrderQuantity      Decimal?            @db.Decimal(14, 3)
+  legacyPurchaseCategoryExternalId String?      @map("purchaseCategoryExternalId")
+  supplyCategoryExternalId  String?
+  lastPurchaseDate          DateTime?
+  status                    String
+  sourceCreatedAt           DateTime?
+  sourceUpdatedAt           DateTime?
+  sourcePayload             Json?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+  purchaseCategory          PurchaseCategory?   @relation(fields: [purchaseCategoryId], references: [id], onDelete: SetNull)
+  vendorMappings            VendorItemMapping[]
+
+  @@map("kitchen_items")
+}
+
+model ProcurementPurchaseOrder {
+  id                   String                         @id @default(cuid())
+  externalId           String                         @unique
+  poNumber             String                         @unique
+  vendorExternalId     String?
+  vendorName           String
+  orderDate            DateTime
+  expectedDeliveryDate DateTime
+  paymentTerms         String
+  status               String
+  sourceFlow           String?
+  sourceLabel          String?
+  subtotal             Decimal?                       @db.Decimal(14, 2)
+  taxAmount            Decimal?                       @db.Decimal(14, 2)
+  totalAmount          Decimal?                       @db.Decimal(14, 2)
+  amountPaid           Decimal?                       @db.Decimal(14, 2)
+  amountPending        Decimal?                       @db.Decimal(14, 2)
+  deliveredDate        DateTime?
+  receivedBy           String?
+  receivedQuantities   Json?
+  remarks              String?
+  createdBy            String?
+  approvedBy           String?
+  approvedAt           DateTime?
+  sourceCreatedAt      DateTime?
+  sourceUpdatedAt      DateTime?
+  sourcePayload        Json?
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @updatedAt
+  items                ProcurementPurchaseOrderItem[]
+}
+
+model ProcurementPurchaseOrderItem {
+  id                         String                   @id @default(cuid())
+  purchaseOrderId            String
+  sourceItemId               String?
+  purchaseItemExternalId     String?
+  itemName                   String
+  preferredVendorExternalId  String?
+  selectedVendorExternalId   String?
+  purchaseCategoryExternalId String?
+  supplyCategoryExternalId   String?
+  quantity                   Decimal                  @db.Decimal(14, 3)
+  unit                       String
+  ratePerUnit                Decimal                  @db.Decimal(14, 4)
+  amount                     Decimal                  @db.Decimal(14, 2)
+  receivedQuantity           Decimal?                 @db.Decimal(14, 3)
+  pendingQuantity            Decimal?                 @db.Decimal(14, 3)
+  sourcePayload              Json?
+  createdAt                  DateTime                 @default(now())
+  updatedAt                  DateTime                 @updatedAt
+  purchaseOrder              ProcurementPurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+}
+
+model ProcurementGoodsReceipt {
+  id                      String                        @id @default(cuid())
+  externalId              String                        @unique
+  grnNumber               String                        @unique
+  purchaseOrderId         String?
+  purchaseOrderExternalId String?
+  poNumber                String
+  vendorExternalId        String?
+  vendorName              String
+  receiptDate             DateTime
+  destinationStore        String
+  qualityCheckStatus      String
+  qualityCheckedBy        String?
+  qualityRemarks          String?
+  receivedBy              String?
+  sourceCreatedAt         DateTime?
+  sourcePayload           Json?
+  createdAt               DateTime                      @default(now())
+  updatedAt               DateTime                      @updatedAt
+  items                   ProcurementGoodsReceiptItem[]
+}
+
+model ProcurementGoodsReceiptItem {
+  id                     String                  @id @default(cuid())
+  goodsReceiptId         String
+  purchaseItemExternalId String?
+  itemName               String
+  orderedQuantity        Decimal                 @db.Decimal(14, 3)
+  receivedQuantity       Decimal                 @db.Decimal(14, 3)
+  acceptedQuantity       Decimal                 @db.Decimal(14, 3)
+  rejectedQuantity       Decimal                 @db.Decimal(14, 3)
+  unit                   String
+  ratePerUnit            Decimal                 @db.Decimal(14, 4)
+  totalValue             Decimal                 @db.Decimal(14, 2)
+  sourcePayload          Json?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  goodsReceipt           ProcurementGoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+
+  @@index([goodsReceiptId])
+}
+
+model InventoryStoreStock {
+  id                     String   @id @default(cuid())
+  externalKey            String   @unique
+  storeLocation          String
+  purchaseItemExternalId String
+  itemName               String
+  currentStock           Decimal  @db.Decimal(14, 3)
+  unit                   String
+  reorderLevel           Decimal  @db.Decimal(14, 3)
+  lastUpdatedAt          DateTime
+  sourcePayload          Json?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([storeLocation])
+  @@index([purchaseItemExternalId])
+}
+
+model InventoryStockTransfer {
+  id              String                       @id @default(cuid())
+  externalId      String                       @unique
+  transferNumber  String                       @unique
+  transferDate    DateTime
+  fromStore       String
+  toStore         String
+  status          String
+  issuedBy        String?
+  receivedBy      String?
+  receivedAt      DateTime?
+  remarks         String?
+  sourceCreatedAt DateTime?
+  sourcePayload   Json?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+  items           InventoryStockTransferItem[]
+}
+
+model InventoryStockTransferItem {
+  id                     String                 @id @default(cuid())
+  stockTransferId        String
+  purchaseItemExternalId String?
+  itemName               String
+  quantity               Decimal                @db.Decimal(14, 3)
+  unit                   String
+  status                 String
+  sourcePayload          Json?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  stockTransfer          InventoryStockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+
+  @@index([stockTransferId])
+}
+
+model ProcurementVendorBill {
+  id                      String                      @id @default(cuid())
+  externalId              String                      @unique
+  billNumber              String                      @unique
+  vendorBillNumber        String?
+  billDate                DateTime
+  dueDate                 DateTime
+  vendorExternalId        String?
+  vendorName              String
+  purchaseOrderExternalId String?
+  poNumber                String?
+  subtotal                Decimal?                    @db.Decimal(14, 2)
+  taxRate                 Decimal?                    @db.Decimal(8, 4)
+  taxAmount               Decimal?                    @db.Decimal(14, 2)
+  totalAmount             Decimal?                    @db.Decimal(14, 2)
+  amountPaid              Decimal?                    @db.Decimal(14, 2)
+  amountPending           Decimal?                    @db.Decimal(14, 2)
+  status                  String
+  remarks                 String?
+  createdBy               String?
+  sourceCreatedAt         DateTime?
+  sourceUpdatedAt         DateTime?
+  sourcePayload           Json?
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
+  items                   ProcurementVendorBillItem[]
+  payments                ProcurementVendorPayment[]
+}
+
+model ProcurementVendorBillItem {
+  id                     String                @id @default(cuid())
+  vendorBillId           String
+  sourceItemId           String?
+  purchaseItemExternalId String?
+  itemName               String
+  quantity               Decimal               @db.Decimal(14, 3)
+  unit                   String
+  ratePerUnit            Decimal               @db.Decimal(14, 4)
+  amount                 Decimal               @db.Decimal(14, 2)
+  sourcePayload          Json?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  vendorBill             ProcurementVendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+
+  @@index([vendorBillId])
+}
+
+model ProcurementVendorPayment {
+  id               String                @id @default(cuid())
+  vendorBillId     String
+  sourcePaymentId  String?
+  voucherNumber    String?
+  paymentDate      DateTime
+  vendorExternalId String?
+  vendorName       String
+  amount           Decimal               @db.Decimal(14, 2)
+  paymentMethod    String
+  paymentReference String?
+  bankName         String?
+  chequeNumber     String?
+  chequeDate       DateTime?
+  approvedBy       String?
+  approvedAt       DateTime?
+  remarks          String?
+  paidBy           String?
+  sourceCreatedAt  DateTime?
+  sourcePayload    Json?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  vendorBill       ProcurementVendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+
+  @@index([vendorBillId])
+}
+
+model BanquetCuisine {
+  id                String   @id @default(cuid())
+  externalId        String   @unique
+  code              String?
+  name              String
+  module            String
+  status            String
+  description       String?
+  linkedDishesCount Int?
+  createdBy         String?
+  updatedBy         String?
+  sourceCreatedAt   DateTime?
+  sourceUpdatedAt   DateTime?
+  sourcePayload     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([module])
+  @@index([status])
+  @@map("banquet_cuisines")
+}
+
+model KitchenStationMaster {
+  id                   String   @id @default(cuid())
+  externalId           String   @unique
+  code                 String?
+  name                 String
+  module               String
+  productionType       String?
+  linkedStoreExternalId String?
+  linkedStoreName      String?
+  linkedStoreLocation  String?
+  status               String
+  description          String?
+  notes                String?
+  linkedDishesCount    Int?
+  linkedRecipesCount   Int?
+  createdBy            String?
+  updatedBy            String?
+  sourceCreatedAt      DateTime?
+  sourceUpdatedAt      DateTime?
+  sourcePayload        Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([module])
+  @@index([status])
+  @@map("kitchen_station_masters")
+}
+
+model KitchenDishCategoryMaster {
+  id                String   @id @default(cuid())
+  externalId        String   @unique
+  code              String?
+  name              String
+  module            String
+  status            String
+  description       String?
+  notes             String?
+  linkedDishesCount Int?
+  createdBy         String?
+  updatedBy         String?
+  sourceCreatedAt   DateTime?
+  sourceUpdatedAt   DateTime?
+  sourcePayload     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([module])
+  @@index([status])
+  @@map("kitchen_dish_category_masters")
+}
+
+model MeasurementUnitMaster {
+  id               String   @id @default(cuid())
+  externalId       String   @unique
+  code             String
+  name             String
+  symbol           String
+  family           String
+  baseUnitCode     String?
+  conversionToBase Decimal? @db.Decimal(14, 6)
+  allowPurchase    Boolean  @default(false)
+  allowIssue       Boolean  @default(false)
+  allowRecipe      Boolean  @default(false)
+  allowYield       Boolean  @default(false)
+  allowSales       Boolean  @default(false)
+  status           String
+  notes            String?
+  createdBy        String?
+  sourceCreatedAt  DateTime?
+  sourceUpdatedAt  DateTime?
+  sourcePayload    Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([family])
+  @@index([status])
+  @@map("measurement_unit_masters")
+}
+
+model KitchenStoreMaster {
+  id             String   @id @default(cuid())
+  externalId     String   @unique
+  code           String
+  name           String
+  kind           String
+  purpose        String
+  parentStoreId  String?
+  status         String
+  notes          String?
+  createdBy      String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  sourcePayload  Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+  @@map("kitchen_store_masters")
+}
+
+model BanquetDish {
+  id                      String   @id @default(cuid())
+  externalId              String   @unique
+  dishCode                String?
+  dishName                String
+  cuisineExternalId       String?
+  cuisineName             String?
+  categoryExternalId      String?
+  category                String?
+  module                  String
+  kitchenStationExternalId String?
+  preparationArea         String?
+  sourceType              String?
+  productionType          String?
+  issuedFrom              String?
+  unitOfSale              String?
+  status                  String
+  description             String?
+  hasRecipe               Boolean  @default(false)
+  recipeExternalId        String?
+  estimatedCost           Decimal? @db.Decimal(14, 4)
+  costPerBaseUnit         Decimal? @db.Decimal(14, 4)
+  sellingPrice            Decimal? @db.Decimal(14, 4)
+  recipeCost              Decimal? @db.Decimal(14, 4)
+  defaultVariantCost      Decimal? @db.Decimal(14, 4)
+  defaultSellingPrice     Decimal? @db.Decimal(14, 4)
+  foodCostPercentage      Decimal? @db.Decimal(8, 4)
+  grossMargin             Decimal? @db.Decimal(8, 4)
+  createdBy               String?
+  updatedBy               String?
+  approvedBy              String?
+  approvedAt              DateTime?
+  sourceCreatedAt         DateTime?
+  sourceUpdatedAt         DateTime?
+  sourcePayload           Json?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([module])
+  @@index([status])
+  @@index([cuisineExternalId])
+  @@map("banquet_dishes")
+}
+
+model BanquetRecipe {
+  id                          String                    @id @default(cuid())
+  externalId                  String                    @unique
+  dishExternalId              String
+  recipeCode                  String?
+  recipeName                  String?
+  recipeType                  String?
+  outputItemExternalId        String?
+  outputItemName              String?
+  recipeCategoryExternalId    String?
+  kitchenSectionExternalId    String?
+  status                      String
+  preparationSteps            String?
+  preparationTimeMinutes      Int?
+  yieldQuantity               Decimal?                  @db.Decimal(14, 4)
+  yieldUnit                   String?
+  yieldUnitExternalId         String?
+  targetYieldQuantity         Decimal?                  @db.Decimal(14, 4)
+  targetYieldUnitExternalId   String?
+  expectedWastagePercentage   Decimal?                  @db.Decimal(8, 4)
+  expectedYieldPercentage     Decimal?                  @db.Decimal(8, 4)
+  totalIngredientCost         Decimal?                  @db.Decimal(14, 4)
+  wastageCost                 Decimal?                  @db.Decimal(14, 4)
+  laborCost                   Decimal?                  @db.Decimal(14, 4)
+  utilitiesCost               Decimal?                  @db.Decimal(14, 4)
+  additionalCost              Decimal?                  @db.Decimal(14, 4)
+  totalRecipeCost             Decimal?                  @db.Decimal(14, 4)
+  totalProductionCost         Decimal?                  @db.Decimal(14, 4)
+  totalCost                   Decimal                   @default(0) @db.Decimal(14, 4)
+  costPerPortion              Decimal?                  @db.Decimal(14, 4)
+  costPerYieldUnit            Decimal?                  @db.Decimal(14, 4)
+  supplyMarginPerYieldUnit    Decimal?                  @db.Decimal(14, 4)
+  supplySellingPricePerYieldUnit Decimal?               @db.Decimal(14, 4)
+  supplyFoodCostPercentage    Decimal?                  @db.Decimal(8, 4)
+  suggestedSellingPrice       Decimal?                  @db.Decimal(14, 4)
+  foodCostPercentage          Decimal?                  @db.Decimal(8, 4)
+  createdBy                   String?
+  sourceCreatedAt             DateTime?
+  sourceUpdatedAt             DateTime?
+  sourcePayload               Json?
+  createdAt                   DateTime                  @default(now())
+  updatedAt                   DateTime                  @updatedAt
+  ingredients                 BanquetRecipeIngredient[]
+  costLines                   BanquetRecipeCostLine[]
+
+  @@index([dishExternalId])
+  @@index([status])
+  @@map("banquet_recipes")
+}
+
+model BanquetRecipeIngredient {
+  id                       String        @id @default(cuid())
+  recipeId                 String
+  sourceIngredientId       String?
+  purchaseItemExternalId   String?
+  purchaseItemName         String
+  categoryExternalId       String?
+  categoryName             String?
+  entryQuantity            Decimal?      @db.Decimal(14, 4)
+  entryUnitExternalId      String?
+  requiredQuantity         Decimal?      @db.Decimal(14, 4)
+  quantity                 Decimal       @default(0) @db.Decimal(14, 4)
+  baseQuantity             Decimal?      @db.Decimal(14, 4)
+  baseUnitExternalId       String?
+  unit                     String
+  lastPurchaseRate         Decimal?      @db.Decimal(14, 4)
+  lastPurchaseUnit         String?
+  unitCost                 Decimal?      @db.Decimal(14, 4)
+  costPerUnit              Decimal       @default(0) @db.Decimal(14, 4)
+  wastagePercentage        Decimal?      @db.Decimal(8, 4)
+  netQuantity              Decimal?      @db.Decimal(14, 4)
+  totalCost                Decimal       @default(0) @db.Decimal(14, 4)
+  sourcePayload            Json?
+  recipe                   BanquetRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+  @@index([purchaseItemExternalId])
+  @@map("banquet_recipe_ingredients")
+}
+
+model BanquetRecipeCostLine {
+  id                    String        @id @default(cuid())
+  recipeId              String
+  sourceLineId          String?
+  category              String
+  name                  String
+  calculationBasis      String
+  rate                  Decimal       @default(0) @db.Decimal(14, 4)
+  quantity              Decimal?      @db.Decimal(14, 4)
+  capacityQuantity      Decimal?      @db.Decimal(14, 4)
+  unit                  String?
+  ingredientReferenceId String?
+  totalCost             Decimal       @default(0) @db.Decimal(14, 4)
+  sourcePayload         Json?
+  recipe                BanquetRecipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+  @@map("banquet_recipe_cost_lines")
+}
+
+model BanquetMenuPackageType {
+  id             String   @id @default(cuid())
+  externalId     String   @unique
+  code           String
+  name           String
+  status         String
+  notes          String?
+  displayOrder   Int?
+  createdBy      String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  sourcePayload  Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+  @@map("banquet_menu_package_types")
+}
+
+model BanquetMenuPackage {
+  id                   String                    @id @default(cuid())
+  externalId           String                    @unique
+  packageName          String
+  packageType          String
+  module               String
+  minimumGuests        Int                       @default(0)
+  maximumGuests        Int?
+  totalCostPerHead     Decimal                   @default(0) @db.Decimal(14, 4)
+  sellingPricePerHead  Decimal                   @default(0) @db.Decimal(14, 4)
+  status               String
+  description          String?
+  createdBy            String?
+  sourceCreatedAt      DateTime?
+  sourceUpdatedAt      DateTime?
+  sourcePayload        Json?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  dishes               BanquetMenuPackageDish[]
+  choiceGroups         BanquetMenuPackageChoiceGroup[]
+
+  @@index([module])
+  @@index([status])
+  @@map("banquet_menu_packages")
+}
+
+model BanquetMenuPackageDish {
+  id                  String             @id @default(cuid())
+  packageId           String
+  sourceDishId        String?
+  dishExternalId      String?
+  dishName            String
+  preparationArea     String?
+  variantExternalId   String?
+  variantLabel        String?
+  sourceType          String?
+  quantityPerHead     Decimal            @default(0) @db.Decimal(14, 4)
+  unit                String
+  costPerHead         Decimal            @default(0) @db.Decimal(14, 4)
+  isFromRestaurant    Boolean            @default(false)
+  sourcePayload       Json?
+  package             BanquetMenuPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@index([packageId])
+  @@index([dishExternalId])
+  @@map("banquet_menu_package_dishes")
+}
+
+model BanquetMenuPackageChoiceGroup {
+  id              String             @id @default(cuid())
+  packageId       String
+  sourceGroupId   String?
+  groupName       String
+  minSelect       Int                @default(0)
+  maxSelect       Int                @default(0)
+  required        Boolean            @default(false)
+  costingMethod   String
+  defaultDishId   String?
+  sourcePayload   Json?
+  package         BanquetMenuPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@index([packageId])
+  @@map("banquet_menu_package_choice_groups")
+}
+
+model CentralKitchenEstimate {
+  id                    String                       @id @default(cuid())
+  externalKey            String                       @unique
+  bookingExternalId      String
+  dateKey                String
+  status                 String
+  guestCountSnapshot     Int?
+  menuSignature          String?
+  foodSuppliesSignature  String?
+  savedAt                DateTime?
+  approvedAt             DateTime?
+  approvedBy             String?
+  managementAlertSentAt  DateTime?
+  sourcePayload          Json?
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+  lines                  CentralKitchenEstimateLine[]
+
+  @@index([bookingExternalId])
+  @@index([dateKey])
+  @@map("central_kitchen_estimates")
+}
+
+model CentralKitchenEstimateLine {
+  id                      String                 @id @default(cuid())
+  estimateId              String
+  lineExternalId          String
+  estimateFactor          Decimal                @default(0) @db.Decimal(14, 4)
+  wastagePercent          Decimal                @default(0) @db.Decimal(8, 4)
+  sellingPriceAllocation  Decimal                @default(0) @db.Decimal(14, 4)
+  factorMode              String
+  notes                   String?
+  sourcePayload           Json?
+  estimate                CentralKitchenEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+
+  @@index([estimateId])
+  @@map("central_kitchen_estimate_lines")
+}
+
+model CentralKitchenCorrectionRequest {
+  id                 String   @id @default(cuid())
+  externalId         String   @unique
+  bookingExternalId  String
+  dateKey            String
+  reservationNumber  String?
+  eventLabel         String?
+  lineExternalId     String?
+  menuItemName       String?
+  reason             String
+  notes              String?
+  status             String
+  requestedBy        String?
+  sourceCreatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([bookingExternalId])
+  @@index([dateKey])
+  @@map("central_kitchen_correction_requests")
+}
+
+model CentralKitchenBackupPlan {
+  id                 String   @id @default(cuid())
+  externalId         String   @unique
+  bookingExternalId  String
+  dateKey            String
+  itemName           String
+  reason             String
+  estimateFactor     Decimal  @default(0) @db.Decimal(14, 4)
+  wastagePercent     Decimal  @default(0) @db.Decimal(8, 4)
+  unitOfMeasure      String
+  costPerUnit        Decimal  @default(0) @db.Decimal(14, 4)
+  notes              String?
+  createdBy          String?
+  sourceCreatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([bookingExternalId])
+  @@index([dateKey])
+  @@map("central_kitchen_backup_plans")
+}
+
+model CentralKitchenRequisition {
+  id                 String                          @id @default(cuid())
+  externalId         String                          @unique
+  requisitionNumber  String
+  bookingExternalId  String
+  reservationNumber  String?
+  customerName       String
+  eventDate          DateTime
+  venueName          String?
+  primeSpaceName     String?
+  subSpaceName       String?
+  status             String
+  remarks            String?
+  createdBy          String?
+  approvedBy         String?
+  approvedAt         DateTime?
+  sourceCreatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime                        @default(now())
+  updatedAt          DateTime                        @updatedAt
+  lines              CentralKitchenRequisitionLine[]
+
+  @@index([bookingExternalId])
+  @@index([eventDate])
+  @@map("central_kitchen_requisitions")
+}
+
+model CentralKitchenRequisitionLine {
+  id                     String                    @id @default(cuid())
+  requisitionId          String
+  purchaseItemExternalId String?
+  itemName               String
+  sourceStore            String?
+  unit                   String
+  requiredQuantity       Decimal                   @default(0) @db.Decimal(14, 4)
+  linkedMenuItems        Json?
+  sourcePayload          Json?
+  requisition            CentralKitchenRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+
+  @@index([requisitionId])
+  @@index([purchaseItemExternalId])
+  @@map("central_kitchen_requisition_lines")
+}
+
+model CentralKitchenDispatchPlan {
+  id                 String                       @id @default(cuid())
+  externalId         String                       @unique
+  dispatchNumber     String
+  bookingExternalId  String
+  reservationNumber  String?
+  customerName       String
+  eventDate          DateTime
+  eventTime          String?
+  venueName          String?
+  primeSpaceName     String?
+  subSpaceName       String?
+  status             String
+  remarks            String?
+  createdBy          String?
+  approvedBy         String?
+  approvedAt         DateTime?
+  sourceCreatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  lines              CentralKitchenDispatchLine[]
+
+  @@index([bookingExternalId])
+  @@index([eventDate])
+  @@map("central_kitchen_dispatch_plans")
+}
+
+model CentralKitchenDispatchLine {
+  id             String                     @id @default(cuid())
+  dispatchPlanId String
+  dishExternalId String?
+  menuItemName   String
+  section        String
+  quantity       Decimal                    @default(0) @db.Decimal(14, 4)
+  unit           String
+  dispatchTo     String
+  notes          String?
+  sourcePayload  Json?
+  dispatchPlan   CentralKitchenDispatchPlan @relation(fields: [dispatchPlanId], references: [id], onDelete: Cascade)
+
+  @@index([dispatchPlanId])
+  @@index([dishExternalId])
+  @@map("central_kitchen_dispatch_lines")
+}
+
+model KitchenIssueSheet {
+  id                 String                  @id @default(cuid())
+  externalId         String                  @unique
+  issueNumber        String
+  module             String
+  bookingExternalId  String
+  customerName       String
+  eventType          String?
+  venueName          String?
+  eventDate          DateTime
+  eventTime          String?
+  guestCount         Int                     @default(0)
+  packageExternalId  String?
+  packageName        String?
+  status             String
+  remarks            String?
+  createdBy          String?
+  sourceCreatedAt    DateTime?
+  sourceUpdatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  items              KitchenIssueSheetItem[]
+
+  @@index([bookingExternalId])
+  @@index([eventDate])
+  @@map("kitchen_issue_sheets")
+}
+
+model KitchenIssueSheetItem {
+  id                     String            @id @default(cuid())
+  issueSheetId           String
+  purchaseItemExternalId String?
+  itemName               String
+  sourceStore            String
+  unit                   String
+  requiredQuantity       Decimal           @default(0) @db.Decimal(14, 4)
+  issuedQuantity         Decimal           @default(0) @db.Decimal(14, 4)
+  shortageQuantity       Decimal           @default(0) @db.Decimal(14, 4)
+  availableQuantity      Decimal           @default(0) @db.Decimal(14, 4)
+  linkedDishes           Json?
+  sourcePayload          Json?
+  issueSheet             KitchenIssueSheet @relation(fields: [issueSheetId], references: [id], onDelete: Cascade)
+
+  @@index([issueSheetId])
+  @@index([purchaseItemExternalId])
+  @@map("kitchen_issue_sheet_items")
+}
+
+model CustomerInvoice {
+  id                 String                   @id @default(cuid())
+  externalId         String                   @unique
+  invoiceNumber      String                   @unique
+  invoiceDate        DateTime
+  dueDate            DateTime
+  bookingExternalId  String?
+  customerName       String
+  customerPhone      String?
+  customerEmail      String?
+  eventDate          DateTime?
+  venueName          String?
+  subtotal           Decimal                  @default(0) @db.Decimal(14, 2)
+  taxRate            Decimal                  @default(0) @db.Decimal(8, 4)
+  taxAmount          Decimal                  @default(0) @db.Decimal(14, 2)
+  discount           Decimal                  @default(0) @db.Decimal(14, 2)
+  discountReason     String?
+  totalAmount        Decimal                  @default(0) @db.Decimal(14, 2)
+  amountPaid         Decimal                  @default(0) @db.Decimal(14, 2)
+  amountPending      Decimal                  @default(0) @db.Decimal(14, 2)
+  status             String
+  remarks            String?
+  termsAndConditions String?
+  createdBy          String?
+  sentAt             DateTime?
+  sourceCreatedAt    DateTime?
+  sourceUpdatedAt    DateTime?
+  sourcePayload      Json?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  items              CustomerInvoiceItem[]
+  receipts           CustomerPaymentReceipt[]
+
+  @@index([bookingExternalId])
+  @@index([invoiceDate])
+  @@index([status])
+  @@map("customer_invoices")
+}
+
+model CustomerInvoiceItem {
+  id                 String          @id @default(cuid())
+  invoiceId          String
+  sourceItemId       String?
+  description        String
+  itemType           String
+  quantity           Decimal         @default(0) @db.Decimal(14, 4)
+  unit               String
+  ratePerUnit        Decimal         @default(0) @db.Decimal(14, 4)
+  amount             Decimal         @default(0) @db.Decimal(14, 2)
+  taxable            Boolean         @default(false)
+  sourcePayload      Json?
+  invoice            CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("customer_invoice_items")
+}
+
+model CustomerPaymentReceipt {
+  id                 String          @id @default(cuid())
+  invoiceId          String
+  sourceReceiptId    String?
+  receiptNumber      String?
+  receiptDate        DateTime
+  customerName       String
+  amount             Decimal         @default(0) @db.Decimal(14, 2)
+  paymentMethod      String
+  paymentReference   String?
+  bankName           String?
+  reconciled         Boolean         @default(false)
+  reconciledDate     DateTime?
+  reconciledBy       String?
+  remarks            String?
+  receivedBy         String?
+  sourceCreatedAt    DateTime?
+  sourcePayload      Json?
+  invoice            CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("customer_payment_receipts")
+}
+
+model GeneralExpenseRecord {
+  id               String   @id @default(cuid())
+  externalId       String   @unique
+  expenseNumber    String   @unique
+  expenseDate      DateTime
+  category         String
+  description      String
+  amount           Decimal  @default(0) @db.Decimal(14, 2)
+  paymentMethod    String
+  paymentReference String?
+  approvedBy       String?
+  approvedAt       DateTime?
+  remarks          String?
+  createdBy        String?
+  sourceCreatedAt  DateTime?
+  sourcePayload    Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([expenseDate])
+  @@index([category])
+  @@map("general_expenses")
+}
+
+model ChartAccountRecord {
+  id               String   @id @default(cuid())
+  externalId       String   @unique
+  code             String   @unique
+  name             String
+  type             String
+  category         String
+  normalBalance    String
+  statement        String
+  isActive         Boolean  @default(true)
+  systemControlled Boolean  @default(false)
+  description      String?
+  sourcePayload    Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+  @@map("chart_accounts")
+}
+
+model AccountingPostingRuleRecord {
+  id                String   @id @default(cuid())
+  externalId        String   @unique
+  eventType         String
+  label             String
+  module            String
+  debitAccountCode  String
+  creditAccountCode String
+  dimensionSource   String
+  timing            String
+  isActive          Boolean  @default(true)
+  sourcePayload     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([eventType])
+  @@index([isActive])
+  @@map("accounting_posting_rules")
+}
+
+model ReservationVenueSetup {
+  id             String   @id @default(cuid())
+  externalId     String   @unique
+  venueName      String
+  location       String?
+  address        String?
+  city           String?
+  phone          String?
+  email          String?
+  capacity       Int?
+  isActive       Boolean  @default(true)
+  operatingHours Json?
+  sourceCreatedAt DateTime?
+  sourcePayload  Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("reservation_venue_setups")
+}
+
+model ReservationPrimeSpaceSetup {
+  id             String   @id @default(cuid())
+  externalId     String   @unique
+  venueExternalId String?
+  spaceName      String
+  spaceType      String?
+  capacity       Int?
+  area           Decimal? @db.Decimal(14, 2)
+  isActive       Boolean  @default(true)
+  defaultAdvanceRuleId String?
+  sourceCreatedAt DateTime?
+  sourcePayload  Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([venueExternalId])
+  @@index([isActive])
+  @@map("reservation_prime_space_setups")
+}
+
+model ReservationSubSpaceSetup {
+  id                    String   @id @default(cuid())
+  externalId            String   @unique
+  primeSpaceExternalId  String?
+  venueExternalId       String?
+  spaceName             String
+  capacity              Int?
+  area                  Decimal? @db.Decimal(14, 2)
+  isActive              Boolean  @default(true)
+  canOperateIndependently Boolean @default(false)
+  sourceCreatedAt       DateTime?
+  sourcePayload         Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([primeSpaceExternalId])
+  @@index([venueExternalId])
+  @@map("reservation_sub_space_setups")
+}
+
+model ReservationLayoutSetup {
+  id                  String   @id @default(cuid())
+  externalId          String   @unique
+  venueExternalId     String?
+  primeSpaceExternalId String?
+  subSpaceExternalId  String?
+  layoutName          String
+  layoutType          String?
+  capacity            Int?
+  description         String?
+  isActive            Boolean  @default(true)
+  sourceCreatedAt     DateTime?
+  sourcePayload       Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([venueExternalId])
+  @@index([primeSpaceExternalId])
+  @@map("reservation_layout_setups")
+}
+
+model EventTypeSetup {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  name            String
+  displayName     String
+  category        String
+  requiresCouple  Boolean  @default(false)
+  defaultDuration Decimal? @db.Decimal(8, 2)
+  color           String?
+  isActive        Boolean  @default(true)
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@map("event_type_setups")
+}
+
+model TimeSlotSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  startTime     String
+  endTime       String
+  slotType      String
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([slotType])
+  @@index([isActive])
+  @@map("time_slot_setups")
+}
+
+model ReservationServiceSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  category      String
+  basePrice     Decimal  @default(0) @db.Decimal(14, 2)
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@map("reservation_service_setups")
+}
+
+model ReservationMenuPackageSetup {
+  id             String   @id @default(cuid())
+  externalId     String   @unique
+  name           String
+  pricePerPerson Decimal  @default(0) @db.Decimal(14, 2)
+  description    String?
+  isActive       Boolean  @default(true)
+  sourcePayload  Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("reservation_menu_package_setups")
+}
+
+model RcsCategorySetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  status        String?
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("rcs_category_setups")
+}
+
+model RcsServiceSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  categoryId    String?
+  categoryName  String?
+  basePrice     Decimal? @db.Decimal(14, 2)
+  status        String?
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("rcs_service_setups")
+}
+
+model RcsVendorSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  phone         String?
+  categoryId    String?
+  categoryName  String?
+  status        String?
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("rcs_vendor_setups")
+}
+
+model RcsVendorRateSetup {
+  id                String   @id @default(cuid())
+  externalId        String   @unique
+  vendorExternalId  String?
+  serviceExternalId String?
+  rate              Decimal  @default(0) @db.Decimal(14, 2)
+  unit              String?
+  isActive          Boolean  @default(true)
+  sourcePayload     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([vendorExternalId])
+  @@index([serviceExternalId])
+  @@map("rcs_vendor_rate_setups")
+}
+
+model RcsPackageSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  price         Decimal? @db.Decimal(14, 2)
+  status        String?
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("rcs_package_setups")
+}
+
+model RcsCommissionRuleSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  ruleType      String?
+  value         Decimal? @db.Decimal(14, 4)
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("rcs_commission_rule_setups")
+}
+
+model RcsApprovalSetting {
+  id            String   @id @default(cuid())
+  externalKey   String   @unique
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("rcs_approval_settings")
+}
+
+model AdvanceRuleSetup {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  ruleName        String
+  applicationType String
+  appliedTo       String?
+  advanceType     String
+  value           Decimal  @default(0) @db.Decimal(14, 4)
+  isActive        Boolean  @default(true)
+  priority        Int      @default(0)
+  sourceCreatedAt DateTime?
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([applicationType])
+  @@index([isActive])
+  @@map("advance_rule_setups")
+}
+
+model TaxGroupSetup {
+  id              String   @id @default(cuid())
+  externalId      String   @unique
+  name            String
+  totalPercentage Decimal  @default(0) @db.Decimal(8, 4)
+  isActive        Boolean  @default(true)
+  taxes           Json?
+  sourcePayload   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("tax_group_setups")
+}
+
+model DiscountSetup {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  name          String
+  discountType  String?
+  value         Decimal? @db.Decimal(14, 4)
+  isActive      Boolean  @default(true)
+  sourcePayload Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive])
+  @@map("discount_setups")
+}

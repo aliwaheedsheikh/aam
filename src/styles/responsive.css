@@ -1,0 +1,364 @@
+/**
+ * VenueOps ERP - Responsive Design System
+ * Desktop-First Approach for Enterprise Applications
+ * 
+ * Target Screen Sizes:
+ * - Large Desktop (27"+): 2560x1440+ (Design baseline)
+ * - Standard Desktop: 1920x1080
+ * - Laptop (15"): 1366x768 or 1600x900
+ * - Small Laptop (13"): 1280x720 (minimum supported)
+ * 
+ * Strategy: Use viewport-based scaling for consistent proportions
+ */
+
+/* 
+ * Responsive Root Scaling
+ * Scales the entire interface proportionally based on viewport width
+ * Maintains design integrity while fitting smaller screens
+ */
+
+/* Large Desktop (27" and above) - Design Baseline */
+@media (min-width: 2560px) {
+  :root {
+    --font-size: 16px;
+    --scale-factor: 1;
+  }
+}
+
+/* Standard Desktop (24" - 1920x1080) */
+@media (min-width: 1920px) and (max-width: 2559px) {
+  :root {
+    --font-size: 15px;
+    --scale-factor: 0.95;
+  }
+}
+
+/* Laptop Large (15" - 1600x900) */
+@media (min-width: 1600px) and (max-width: 1919px) {
+  :root {
+    --font-size: 14px;
+    --scale-factor: 0.90;
+  }
+}
+
+/* Laptop Standard (15" - 1366x768) */
+@media (min-width: 1366px) and (max-width: 1599px) {
+  :root {
+    --font-size: 13px;
+    --scale-factor: 0.85;
+  }
+}
+
+/* Laptop Small (13" - 1280x720) - Minimum Supported */
+@media (min-width: 1280px) and (max-width: 1365px) {
+  :root {
+    --font-size: 12px;
+    --scale-factor: 0.80;
+  }
+  
+  /* Apply slight zoom to maintain usability */
+  body {
+    zoom: 0.9;
+  }
+}
+
+/* Below minimum supported width - Warning state */
+@media (max-width: 1279px) {
+  :root {
+    --font-size: 11px;
+    --scale-factor: 0.75;
+  }
+  
+  /* Apply zoom for very small screens */
+  body {
+    zoom: 0.85;
+  }
+  
+  /* Add warning banner */
+  body::before {
+    content: "⚠️ Screen width too small. Minimum 1280px recommended for optimal experience.";
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 8px 16px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    z-index: 99999;
+    border-bottom: 1px solid #fbbf24;
+  }
+  
+  body > * {
+    margin-top: 36px;
+  }
+}
+
+/**
+ * Responsive Spacing Utilities
+ * Adjusts padding and margins for different screen sizes
+ */
+
+/* Container padding adjustments */
+@media (max-width: 1599px) {
+  .container,
+  [class*="container"] {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}
+
+/* Dialog/Modal adjustments for smaller screens */
+@media (max-width: 1599px) {
+  [role="dialog"] [class*="px-6"] {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  
+  [role="dialog"] [class*="py-6"] {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+  
+  [role="dialog"] [class*="gap-6"] {
+    gap: 1rem;
+  }
+}
+
+/**
+ * Grid Layout Responsiveness
+ * Adjusts multi-column layouts for smaller screens
+ */
+
+/* Two-column to single-column stack on laptop screens */
+@media (max-width: 1599px) {
+  .grid.grid-cols-2 {
+    grid-template-columns: 1fr;
+  }
+  
+  /* Maintain two columns for XL breakpoint */
+  .xl\:grid-cols-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/**
+ * Typography Scaling
+ * Ensures text remains readable at all sizes
+ */
+
+@media (max-width: 1599px) {
+  h1 {
+    font-size: calc(var(--text-xl) * var(--scale-factor, 1));
+  }
+  
+  h2 {
+    font-size: calc(var(--text-lg) * var(--scale-factor, 1));
+  }
+  
+  h3 {
+    font-size: calc(var(--text-base) * var(--scale-factor, 1));
+  }
+}
+
+/**
+ * Button and Input Responsiveness
+ * Maintains usability on smaller screens
+ */
+
+@media (max-width: 1599px) {
+  button,
+  input,
+  select,
+  textarea {
+    min-height: 36px;
+  }
+  
+  /* Compact button padding */
+  button {
+    padding: 0.5rem 1rem;
+  }
+}
+
+/**
+ * Table Responsiveness
+ * Ensures tables remain usable without horizontal scroll
+ */
+
+@media (max-width: 1599px) {
+  table {
+    font-size: 0.875rem;
+  }
+  
+  th,
+  td {
+    padding: 0.5rem;
+  }
+}
+
+/**
+ * Sidebar and Navigation
+ * Adjusts sidebar widths for smaller screens
+ */
+
+@media (max-width: 1599px) {
+  aside,
+  [class*="sidebar"] {
+    width: 240px;
+    min-width: 240px;
+  }
+}
+
+@media (max-width: 1365px) {
+  aside,
+  [class*="sidebar"] {
+    width: 200px;
+    min-width: 200px;
+  }
+}
+
+/**
+ * Modal and Dialog Sizing
+ * Ensures dialogs don't overflow on smaller screens
+ */
+
+@media (max-width: 1599px) {
+  [role="dialog"]:not([class*="w-screen"]) {
+    max-width: calc(100vw - 2rem);
+  }
+}
+
+/**
+ * Scroll Container Height Adjustments
+ * Accounts for smaller viewport heights
+ */
+
+@media (max-height: 800px) {
+  .overflow-y-auto {
+    max-height: calc(100vh - 120px);
+  }
+}
+
+@media (max-height: 700px) {
+  .overflow-y-auto {
+    max-height: calc(100vh - 100px);
+  }
+}
+
+/**
+ * Print Styles
+ * Ensures proper printing regardless of screen size
+ */
+
+@media print {
+  :root {
+    --font-size: 12pt;
+  }
+  
+  body {
+    zoom: 1;
+  }
+  
+  /* Hide non-essential elements */
+  aside,
+  nav,
+  [class*="sidebar"],
+  button:not(.print-visible) {
+    display: none !important;
+  }
+}
+
+/**
+ * High DPI Display Adjustments
+ * Retina and high-resolution displays
+ */
+
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  :root {
+    /* Slightly smaller font for sharper rendering */
+    --font-size: calc(var(--font-size) * 0.98);
+  }
+}
+
+/**
+ * Development Helper
+ * Shows current breakpoint in development mode
+ */
+
+@media (max-width: 1279px) {
+  body[data-dev-mode]::after {
+    content: "📱 < 1280px (Too Small)";
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #dc2626;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 99999;
+  }
+}
+
+@media (min-width: 1280px) and (max-width: 1365px) {
+  body[data-dev-mode]::after {
+    content: "💻 1280-1365px (Small Laptop)";
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #f59e0b;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 99999;
+  }
+}
+
+@media (min-width: 1366px) and (max-width: 1599px) {
+  body[data-dev-mode]::after {
+    content: "💻 1366-1599px (Laptop)";
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #3b82f6;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 99999;
+  }
+}
+
+@media (min-width: 1600px) and (max-width: 1919px) {
+  body[data-dev-mode]::after {
+    content: "🖥️ 1600-1919px (Desktop)";
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #10b981;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 99999;
+  }
+}
+
+@media (min-width: 1920px) {
+  body[data-dev-mode]::after {
+    content: "🖥️ 1920px+ (Large Desktop)";
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #8b5cf6;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    z-index: 99999;
+  }
+}

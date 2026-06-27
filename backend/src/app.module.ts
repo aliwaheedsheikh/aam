@@ -8,6 +8,7 @@ import { HealthModule } from "./modules/health/health.module";
 import { MasterDataModule } from "./modules/master-data/master-data.module";
 import { NormalizedDataModule } from "./modules/normalized-data/normalized-data.module";
 import { ReportsModule } from "./modules/reports/reports.module";
+import { RealtimeModule } from "./modules/realtime/realtime.module";
 import { ServiceBookingsModule } from "./modules/service-bookings/service-bookings.module";
 import { UsersModule } from "./modules/users/users.module";
 import { PrismaModule } from "./prisma/prisma.module";
@@ -23,6 +24,7 @@ import { PrismaModule } from "./prisma/prisma.module";
     HealthModule,
     MasterDataModule,
     NormalizedDataModule,
+    RealtimeModule,
     AuthModule,
     CustomersModule,
     BookingsModule,

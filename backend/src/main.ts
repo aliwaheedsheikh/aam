@@ -1,7 +1,9 @@
 import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
+import { Server as HttpServer } from "http";
 import { AppModule } from "./app.module";
+import { RealtimeService } from "./modules/realtime/realtime.service";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -40,6 +42,8 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+
+  app.get(RealtimeService).attachServer(app.getHttpServer() as HttpServer);
 
   await app.listen(port, host);
   console.log(`VenueOps backend listening on http://${host}:${port}/${apiPrefix}`);

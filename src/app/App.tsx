@@ -10,6 +10,7 @@ import { serviceBookingApi } from "@/app/lib/serviceBookingApi";
 import { authApi, AuthApiError } from "@/app/lib/authApi";
 import { authStorage } from "@/app/lib/authStorage";
 import { AuthSession, AuthUser } from "@/app/lib/authTypes";
+import { subscribeToLiveSync } from "@/app/lib/liveSyncSocket";
 import { hydrateMasterDataFromBackend } from "@/app/lib/masterDataStore";
 import { hydrateWorkflowStateFromBackend } from "@/app/lib/workflowState";
 import { APP_LOCALE } from "@/app/lib/locale";
@@ -17,11 +18,43 @@ import { toast } from "sonner";
 
 // VenueOps ERP System - Version 2.0.14 - Multi-Service Calendar System - 21Feb2026
 
-const LIVE_SYNC_POLL_INTERVAL_MS = 2000;
-
 const isInvalidStoredSessionError = (error: unknown) =>
   error instanceof AuthApiError &&
   (error.status === 401 || error.status === 403 || error.message === "No active session");
+
+const isAuthorizationLoadError = (error: unknown) =>
+  error instanceof Error && /\((401|403)\)/.test(error.message);
+
+const getInitialDataLoadFailureFeedback = (
+  error: unknown,
+  resource: "reservations" | "service-bookings",
+) => {
+  if (isAuthorizationLoadError(error)) {
+    return resource === "reservations"
+      ? {
+          notice: "Session expired while loading reservations. Sign in again to restore live booking data.",
+          title: "Session expired",
+          description: "Reservations were not loaded because the backend rejected the current sign-in session.",
+        }
+      : {
+          notice: "Session expired while loading live service bookings. Sign in again to restore catering and rental data.",
+          title: "Session expired",
+          description: "Outdoor catering, food supply, and rental bookings were not loaded because the backend rejected the current sign-in session.",
+        };
+  }
+
+  return resource === "reservations"
+    ? {
+        notice: "Backend connection unavailable. Reconnecting and waiting to reload reservations.",
+        title: "Backend connection failed",
+        description: "No bookings were loaded. Start the backend to enter and save real bookings.",
+      }
+    : {
+        notice: "Backend connection unavailable. Reconnecting and waiting to reload live service bookings.",
+        title: "Service bookings backend connection failed",
+        description: "Outdoor catering, food supply, and rental bookings could not be loaded from the backend.",
+      };
+};
 
 console.log('🚀 VenueOps ERP v2.0.14 - Multi-Service Calendar System Loading...');
 
@@ -440,12 +473,13 @@ export default function App() {
 
         if (!isMounted) return;
 
+        const feedback = getInitialDataLoadFailureFeedback(error, "reservations");
         setBookings([]);
         syncedBookings.current = [];
         setBookingsReady(true);
-        setBackendNotice("Backend connection unavailable. Reconnecting and waiting to reload reservations.");
-        toast.error("Backend connection failed", {
-          description: "No bookings were loaded. Start the backend to enter and save real bookings.",
+        setBackendNotice(feedback.notice);
+        toast.error(feedback.title, {
+          description: feedback.description,
         });
       }
     };
@@ -465,12 +499,13 @@ export default function App() {
 
         if (!isMounted) return;
 
+        const feedback = getInitialDataLoadFailureFeedback(error, "service-bookings");
         setServiceBookings([]);
         syncedServiceBookings.current = [];
         setServiceBookingsReady(true);
-        setBackendNotice("Backend connection unavailable. Reconnecting and waiting to reload live service bookings.");
-        toast.error("Service bookings backend connection failed", {
-          description: "Outdoor catering, food supply, and rental bookings could not be loaded from the backend.",
+        setBackendNotice(feedback.notice);
+        toast.error(feedback.title, {
+          description: feedback.description,
         });
       }
     };
@@ -611,61 +646,139 @@ export default function App() {
     }
 
     let isCancelled = false;
+    let isRefreshingSharedState = false;
+    let lastSharedStateRefreshAt = 0;
+    const SHARED_STATE_MIN_INTERVAL_MS = 10_000;
 
-    const refreshSharedState = async () => {
+    let isRefreshingMasterData = false;
+    let isRefreshingWorkflowState = false;
+
+    const refreshMasterData = async () => {
       try {
         await hydrateMasterDataFromBackend();
-        await hydrateWorkflowStateFromBackend();
-        setBackendNotice(null);
       } catch (error) {
-        console.error("Background shared-state refresh failed:", error);
+        console.error("Background master-data refresh failed:", error);
         setBackendNotice("Reconnecting to backend. Local screen is open, but shared updates are temporarily delayed.");
       }
+    };
 
+    const refreshWorkflowState = async () => {
+      try {
+        await hydrateWorkflowStateFromBackend();
+      } catch (error) {
+        console.error("Background workflow-state refresh failed:", error);
+        setBackendNotice("Reconnecting to backend. Local screen is open, but shared updates are temporarily delayed.");
+      }
+    };
+
+    const refreshBookingsFromBackend = async () => {
       const bookingsDirty =
         serializeBookingsSignature(currentBookingsRef.current) !==
         serializeBookingsSignature(syncedBookings.current);
 
-      if (!bookingsDirty && !isSyncingBookings.current) {
-        try {
-          const apiBookings = deserializeBookings(await bookingApi.fetchBookings());
-          if (!isCancelled) {
-            const apiSignature = serializeBookingsSignature(apiBookings);
-            const localSignature = serializeBookingsSignature(currentBookingsRef.current);
-            setBackendNotice(null);
-            if (apiSignature !== localSignature) {
-              syncedBookings.current = apiBookings;
-              setBookings(apiBookings);
-            }
-          }
-        } catch (error) {
-          console.error("Background booking refresh failed:", error);
-          setBackendNotice("Reconnecting to backend. Reservation updates from other users are temporarily delayed.");
-        }
+      if (bookingsDirty || isSyncingBookings.current) {
+        return;
       }
 
+      try {
+        const apiBookings = deserializeBookings(await bookingApi.fetchBookings());
+        if (!isCancelled) {
+          const apiSignature = serializeBookingsSignature(apiBookings);
+          const localSignature = serializeBookingsSignature(currentBookingsRef.current);
+          setBackendNotice(null);
+          if (apiSignature !== localSignature) {
+            syncedBookings.current = apiBookings;
+            setBookings(apiBookings);
+          }
+        }
+      } catch (error) {
+        console.error("Background booking refresh failed:", error);
+        setBackendNotice("Reconnecting to backend. Reservation updates from other users are temporarily delayed.");
+      }
+    };
+
+    const refreshServiceBookingsFromBackend = async () => {
       const serviceBookingsDirty =
         serializeServiceBookingsSignature(currentServiceBookingsRef.current) !==
         serializeServiceBookingsSignature(syncedServiceBookings.current);
 
-      if (!serviceBookingsDirty && !isSyncingServiceBookings.current) {
-        try {
-          const apiServiceBookings = deserializeServiceBookings(await serviceBookingApi.fetchServiceBookings());
-          if (!isCancelled) {
-            const apiSignature = serializeServiceBookingsSignature(apiServiceBookings);
-            const localSignature = serializeServiceBookingsSignature(currentServiceBookingsRef.current);
-            setBackendNotice(null);
-            if (apiSignature !== localSignature) {
-              syncedServiceBookings.current = apiServiceBookings;
-              setServiceBookings(apiServiceBookings);
-            }
+      if (serviceBookingsDirty || isSyncingServiceBookings.current) {
+        return;
+      }
+
+      try {
+        const apiServiceBookings = deserializeServiceBookings(await serviceBookingApi.fetchServiceBookings());
+        if (!isCancelled) {
+          const apiSignature = serializeServiceBookingsSignature(apiServiceBookings);
+          const localSignature = serializeServiceBookingsSignature(currentServiceBookingsRef.current);
+          setBackendNotice(null);
+          if (apiSignature !== localSignature) {
+            syncedServiceBookings.current = apiServiceBookings;
+            setServiceBookings(apiServiceBookings);
           }
-        } catch (error) {
-          console.error("Background service booking refresh failed:", error);
-          setBackendNotice("Reconnecting to backend. Live service booking updates are temporarily delayed.");
         }
+      } catch (error) {
+        console.error("Background service booking refresh failed:", error);
+        setBackendNotice("Reconnecting to backend. Live service booking updates are temporarily delayed.");
       }
     };
+
+    const refreshSharedState = async () => {
+      const now = Date.now();
+      if (isRefreshingSharedState || now - lastSharedStateRefreshAt < SHARED_STATE_MIN_INTERVAL_MS) {
+        return;
+      }
+      isRefreshingSharedState = true;
+      lastSharedStateRefreshAt = now;
+      try {
+        await refreshMasterData();
+        await refreshWorkflowState();
+        await refreshBookingsFromBackend();
+        await refreshServiceBookingsFromBackend();
+      } finally {
+        isRefreshingSharedState = false;
+      }
+    };
+
+    const unsubscribeLiveSync = subscribeToLiveSync(
+      (event) => {
+        switch (event.resource) {
+          case "master-data":
+            if (!isRefreshingMasterData) {
+              isRefreshingMasterData = true;
+              void refreshMasterData().finally(() => { isRefreshingMasterData = false; });
+            }
+            return;
+          case "workflow-state":
+            if (!isRefreshingWorkflowState) {
+              isRefreshingWorkflowState = true;
+              void refreshWorkflowState().finally(() => { isRefreshingWorkflowState = false; });
+            }
+            return;
+          case "bookings":
+            void refreshBookingsFromBackend();
+            return;
+          case "service-bookings":
+            void refreshServiceBookingsFromBackend();
+            return;
+          default:
+            return;
+        }
+      },
+      (status) => {
+        if (status === "connected") {
+          void refreshSharedState();
+          return;
+        }
+
+        if (status === "disconnected" && !isCancelled) {
+          setBackendNotice((currentNotice) =>
+            currentNotice ??
+            "Live updates reconnecting. Your current screen is open, and data will refresh when the connection returns.",
+          );
+        }
+      }
+    );
 
     const handleVisibilityRefresh = () => {
       if (document.visibilityState === "visible") {
@@ -677,16 +790,12 @@ export default function App() {
       void refreshSharedState();
     };
 
-    const intervalId = window.setInterval(() => {
-      void refreshSharedState();
-    }, LIVE_SYNC_POLL_INTERVAL_MS);
-
     window.addEventListener("visibilitychange", handleVisibilityRefresh);
     window.addEventListener("focus", handleWindowFocus);
 
     return () => {
       isCancelled = true;
-      window.clearInterval(intervalId);
+      unsubscribeLiveSync();
       window.removeEventListener("visibilitychange", handleVisibilityRefresh);
       window.removeEventListener("focus", handleWindowFocus);
     };

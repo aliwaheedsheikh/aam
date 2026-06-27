@@ -867,6 +867,9 @@ model BanquetRecipe {
   targetYieldUnitExternalId   String?
   expectedWastagePercentage   Decimal?                  @db.Decimal(8, 4)
   expectedYieldPercentage     Decimal?                  @db.Decimal(8, 4)
+  laborCostBehavior           String?
+  utilityCostBehavior         String?
+  wastageCostBehavior         String?
   totalIngredientCost         Decimal?                  @db.Decimal(14, 4)
   wastageCost                 Decimal?                  @db.Decimal(14, 4)
   laborCost                   Decimal?                  @db.Decimal(14, 4)

@@ -146,6 +146,7 @@ const getStatusBadge = (status: string) => {
     approved: 'bg-blue-100 text-blue-700',
     received: 'bg-emerald-100 text-emerald-700',
     'partially-received': 'bg-amber-100 text-amber-700',
+    closed: 'bg-slate-200 text-slate-700',
     cancelled: 'bg-red-100 text-red-700',
     pending: 'bg-yellow-100 text-yellow-700',
     'in-transit': 'bg-indigo-100 text-indigo-700',
@@ -564,6 +565,7 @@ export function InventoryManagement({
           (sum, grn) => sum + grn.items.reduce((itemSum, item) => itemSum + item.acceptedQuantity, 0),
           0,
         );
+        const totalClosed = purchaseOrder.items.reduce((sum, item) => sum + (item.closedQuantity ?? 0), 0);
         const totalOrdered = purchaseOrder.items.reduce((sum, item) => sum + item.quantity, 0);
         const expectedStoreLabels = Array.from(
           new Set(
@@ -581,8 +583,9 @@ export function InventoryManagement({
         return {
           ...purchaseOrder,
           totalReceived,
+          totalClosed,
           totalOrdered,
-          percentageReceived: totalOrdered > 0 ? (totalReceived / totalOrdered) * 100 : 0,
+          percentageReceived: totalOrdered > 0 ? ((totalReceived + totalClosed) / totalOrdered) * 100 : 0,
           grnsCount: relatedGrns.length,
           isLate,
           expectedStores: expectedStoreLabels.join(', ') || 'Unassigned',
@@ -610,10 +613,12 @@ export function InventoryManagement({
     return vendors
       .map((vendor) => {
         const vendorPOs = purchaseTrackingRows.filter((purchaseOrder) => purchaseOrder.vendorId === vendor.id);
-        const completedPOs = vendorPOs.filter((purchaseOrder) => purchaseOrder.status === 'received').length;
+        const completedPOs = vendorPOs.filter(
+          (purchaseOrder) => purchaseOrder.status === 'received' || purchaseOrder.status === 'closed',
+        ).length;
         const pendingPOs = vendorPOs.filter((purchaseOrder) => isPendingPurchaseStatus(purchaseOrder.status)).length;
         const onTimeDeliveries = vendorPOs.filter((purchaseOrder) => {
-          if (purchaseOrder.status !== 'received') {
+          if (purchaseOrder.status !== 'received' && purchaseOrder.status !== 'closed') {
             return false;
           }
 

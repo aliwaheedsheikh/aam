@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Put, UseGuards } from "@nestjs/common";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
 import { AppStateService } from "./app-state.service";
 import { UpsertAppStateDto } from "./dto/upsert-app-state.dto";
@@ -19,8 +19,12 @@ export class AppStateController {
   }
 
   @Put(":key")
-  upsert(@Param("key") key: string, @Body() upsertAppStateDto: UpsertAppStateDto) {
-    return this.appStateService.upsert(this.normalizeKey(key), upsertAppStateDto.value);
+  upsert(
+    @Param("key") key: string,
+    @Body() upsertAppStateDto: UpsertAppStateDto,
+    @Headers("x-venueops-client-id") clientId?: string,
+  ) {
+    return this.appStateService.upsert(this.normalizeKey(key), upsertAppStateDto.value, clientId);
   }
 
   private normalizeKey(key: string) {

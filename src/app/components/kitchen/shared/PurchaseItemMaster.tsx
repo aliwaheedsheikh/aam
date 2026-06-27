@@ -1,13 +1,15 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
+  ChevronRight,
   ClipboardList,
   Edit2,
   Eye,
   History,
   Package,
   Plus,
+  Power,
   Save,
   Search,
   Trash2,
@@ -91,11 +93,51 @@ interface BatchEntryDefaults {
   subCategoryId: string;
 }
 
+interface PurchaseItemEditorSnapshot {
+  itemName: string;
+  itemCode: string;
+  categoryId: string;
+  subCategoryId: string;
+  description: string;
+  status: 'active' | 'inactive';
+  inventoryType: InventoryType;
+  trackInventory: boolean;
+  useInRecipeIngredients: boolean;
+  useAsRecipeOutput: boolean;
+  costingMethod: CostingMethod;
+  issueMethod: IssueMethod;
+  purchaseUnit: MeasurementUnit;
+  baseUnit: MeasurementUnit;
+  conversionFactor: number;
+  reorderLevel: number;
+  minimumStockLevel: number;
+  maximumStockLevel: number;
+  allowNegativeStock: boolean;
+  preferredSupplierId: string;
+  approvedVendorMappings: VendorItemMapping[];
+  defaultPurchaseCost: number;
+  leadTimeDays: number;
+  minimumOrderQuantity: number;
+  taxGroupId: string;
+  assignedStoreIds: StoreLocation[];
+}
+
 const tableHeadClass = 'px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600';
 const tableCellClass = 'px-3 py-2 text-sm text-slate-700 align-middle';
+const compactRegisterHeadClass = 'px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600 whitespace-nowrap';
+const compactRegisterCellClass = 'px-2 py-2 text-[12px] text-slate-700 align-middle whitespace-nowrap';
 const inputClass = 'h-8 w-full rounded border border-slate-300 bg-white px-2.5 text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
 const labelClass = 'mb-1 block text-xs font-medium text-slate-700';
 const quietButtonClass = 'inline-flex h-8 items-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50';
+
+const serializeDialogState = (value: unknown) => {
+  try {
+    return JSON.stringify(value) ?? null;
+  } catch (error) {
+    console.error('Failed to serialize dialog state:', error);
+    return null;
+  }
+};
 
 const getLookupOptions = (values: ProcurementLookupValue[]) =>
   getActiveLookupValues(values).map((value) => ({ value: value.id, label: value.name }));
@@ -232,6 +274,15 @@ const createEmptyCategoryManagerDraft = (
   isActive: true,
 });
 
+const compareLookupValues = (left: ProcurementLookupValue, right: ProcurementLookupValue) => {
+  const leftOrder = left.sortOrder ?? 999;
+  const rightOrder = right.sortOrder ?? 999;
+  if (leftOrder !== rightOrder) {
+    return leftOrder - rightOrder;
+  }
+  return left.name.localeCompare(right.name);
+};
+
 const getInventoryType = (item: PurchaseItem): InventoryType =>
   item.inventoryType || legacyInventoryTypeMap[item.category] || 'raw-material';
 
@@ -246,6 +297,30 @@ const getCostingMethodLabel = (costingMethod?: string) =>
 
 const getIssueMethodLabel = (issueMethod?: string) =>
   issueMethodOptions.find((option) => option.value === issueMethod)?.label || (issueMethod || '-').replace(/-/g, ' ');
+
+const getCompactCostingMethodLabel = (costingMethod?: string) => {
+  switch (costingMethod) {
+    case 'weighted-average':
+      return 'Avg';
+    case 'last-purchase-rate':
+      return 'LPR';
+    case 'standard-cost':
+      return 'Std';
+    case 'fifo-costing':
+      return 'FIFO Cost';
+    default:
+      return getCostingMethodLabel(costingMethod);
+  }
+};
+
+const getCompactIssueMethodLabel = (issueMethod?: string) => {
+  switch (issueMethod) {
+    case 'specific-batch':
+      return 'Batch';
+    default:
+      return getIssueMethodLabel(issueMethod);
+  }
+};
 
 const getBaseUnit = (item: PurchaseItem) => item.baseUnitId || item.issueUnit;
 const getPurchaseUnit = (item: PurchaseItem) => item.purchaseUnitId || item.purchaseUnit;
@@ -544,6 +619,12 @@ export function PurchaseItemMaster({
   const [showCategoryManager, setShowCategoryManager] = useState(false);
   const [editingCategoryLookupId, setEditingCategoryLookupId] = useState<string | null>(null);
   const [categoryManagerDraft, setCategoryManagerDraft] = useState<CategoryManagerDraft>(createEmptyCategoryManagerDraft());
+  const [selectedCategoryLookup, setSelectedCategoryLookup] = useState<{
+    section: CategoryManagerSection;
+    id: string;
+  } | null>(null);
+  const [categoryManagerSearchTerm, setCategoryManagerSearchTerm] = useState('');
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<string[]>([]);
   const [showAdvancedSection, setShowAdvancedSection] = useState(false);
   const [showVendorSection, setShowVendorSection] = useState(false);
   const [showStoreSection, setShowStoreSection] = useState(false);
@@ -575,6 +656,8 @@ export function PurchaseItemMaster({
   const [formMinimumOrderQuantity, setFormMinimumOrderQuantity] = useState(0);
   const [formTaxGroupId, setFormTaxGroupId] = useState('');
   const [formAssignedStoreIds, setFormAssignedStoreIds] = useState<StoreLocation[]>([]);
+  const editingItemSourceSignatureRef = useRef<string | null>(null);
+  const editingItemFormSignatureRef = useRef<string | null>(null);
 
   const stockTotalsByItem = useMemo(() => {
     const totals = new Map<string, number>();
@@ -776,6 +859,35 @@ export function PurchaseItemMaster({
   };
 
   const formatRegisterQuantity = (value: number) => quantityFormatter.format(Math.round(value * 1000) / 1000);
+  const formatCompactUnitSummary = (purchaseUnit?: string, baseUnit?: string, conversionFactor?: number) => {
+    const purchaseLabel = formatRegisterUnit(purchaseUnit);
+    const baseLabel = formatRegisterUnit(baseUnit);
+
+    if (!purchaseLabel) {
+      return '-';
+    }
+
+    if (!baseLabel || purchaseLabel === baseLabel || !conversionFactor || conversionFactor <= 0) {
+      return purchaseLabel;
+    }
+
+    return `${purchaseLabel} (${formatRegisterQuantity(conversionFactor)} ${baseLabel})`;
+  };
+
+  const getSetupSummary = (item: (typeof stockRegisterRows)[number]) => {
+    const tokens = [
+      item.recipeEnabled ? 'Rcp OK' : 'Rcp Off',
+      item.recipeOutputEnabled ? 'Output' : null,
+      item.trackInventory ? 'Tracked' : 'No Track',
+      item.missingStoreAssignment ? 'No Store' : null,
+      item.conversionRisk ? 'Unit Risk' : null,
+      getCompactCostingMethodLabel(getCostingMethod(item)),
+      getCompactIssueMethodLabel(getIssueMethod(item)),
+    ].filter(Boolean) as string[];
+
+    return tokens.join(' · ');
+  };
+
   const isWithinSelectedDateRange = (value?: Date | string) => {
     if (!value) {
       return false;
@@ -1297,6 +1409,108 @@ export function PurchaseItemMaster({
 
     return mergedOptions;
   }, [formCategoryId, formSubCategoryId, subCategoryLookupValues]);
+  const editingItemFormSignature = useMemo(
+    () =>
+      serializeDialogState({
+        itemName: formItemName,
+        itemCode: formItemCode,
+        categoryId: formCategoryId,
+        subCategoryId: formSubCategoryId,
+        description: formDescription,
+        status: formStatus,
+        inventoryType: formInventoryType,
+        trackInventory: formTrackInventory,
+        useInRecipeIngredients: formUseInRecipeIngredients,
+        useAsRecipeOutput: formUseAsRecipeOutput,
+        costingMethod: formCostingMethod,
+        issueMethod: formIssueMethod,
+        purchaseUnit: formPurchaseUnit,
+        baseUnit: formBaseUnit,
+        conversionFactor: formConversionFactor,
+        reorderLevel: formReorderLevel,
+        minimumStockLevel: formMinimumStockLevel,
+        maximumStockLevel: formMaximumStockLevel,
+        allowNegativeStock: formAllowNegativeStock,
+        preferredSupplierId: formPreferredSupplierId,
+        approvedVendorMappings: formApprovedVendors.map((mapping) => ({
+          id: mapping.id,
+          vendorId: mapping.vendorId,
+          kitchenItemId: mapping.kitchenItemId,
+          isPreferred: Boolean(mapping.isPreferred),
+          leadTimeDays: mapping.leadTimeDays ?? null,
+          moq: mapping.moq ?? null,
+          lastRate: mapping.lastRate ?? null,
+          contractRate: mapping.contractRate ?? null,
+          status: mapping.status,
+          notes: mapping.notes || '',
+        })),
+        defaultPurchaseCost: formDefaultPurchaseCost,
+        leadTimeDays: formLeadTimeDays,
+        minimumOrderQuantity: formMinimumOrderQuantity,
+        taxGroupId: formTaxGroupId,
+        assignedStoreIds: formAssignedStoreIds,
+      }),
+    [
+      formAllowNegativeStock,
+      formApprovedVendors,
+      formAssignedStoreIds,
+      formBaseUnit,
+      formCategoryId,
+      formConversionFactor,
+      formCostingMethod,
+      formDefaultPurchaseCost,
+      formDescription,
+      formInventoryType,
+      formIssueMethod,
+      formItemCode,
+      formItemName,
+      formLeadTimeDays,
+      formMaximumStockLevel,
+      formMinimumOrderQuantity,
+      formMinimumStockLevel,
+      formPreferredSupplierId,
+      formPurchaseUnit,
+      formReorderLevel,
+      formStatus,
+      formSubCategoryId,
+      formTaxGroupId,
+      formTrackInventory,
+      formUseAsRecipeOutput,
+      formUseInRecipeIngredients,
+    ],
+  );
+  useEffect(() => {
+    if (!dialogOpen || !editingItem) {
+      return;
+    }
+
+    const latestItem = purchaseItems.find((item) => item.id === editingItem.id);
+    if (!latestItem) {
+      closeDialog();
+      return;
+    }
+
+    const latestSourceSignature = getPurchaseItemSourceSignature(latestItem);
+    const currentSourceSignature = editingItemSourceSignatureRef.current;
+    const hasLocalChanges =
+      editingItemFormSignatureRef.current !== null &&
+      editingItemFormSignature !== null &&
+      editingItemFormSignature !== editingItemFormSignatureRef.current;
+
+    if (currentSourceSignature === latestSourceSignature) {
+      if (latestItem !== editingItem) {
+        setEditingItem(latestItem);
+      }
+      return;
+    }
+
+    if (hasLocalChanges) {
+      setEditingItem(latestItem);
+      return;
+    }
+
+    applyEditingItemSnapshot(latestItem);
+  }, [dialogOpen, editingItem, editingItemFormSignature, purchaseItems, vendorItemMappings]);
   const editingDerivedStock = editingItem ? stockTotalsByItem.get(editingItem.id) ?? 0 : 0;
   const currentStockPreview = editingItem ? editingDerivedStock : 0;
   const reservedStockPreview = 0;
@@ -1356,33 +1570,209 @@ export function PurchaseItemMaster({
     },
   ];
   const activeDialogTabConfig = dialogTabs.find((tab) => tab.id === activeDialogTab) ?? dialogTabs[0];
-  const categoryManagerRows = useMemo(
-    () => [
-      ...procurementLookups.purchaseCategories.map((entry) => ({
-        ...entry,
-        section: 'purchaseCategories' as CategoryManagerSection,
-        sectionLabel: 'Category',
-        parentLabel: '-',
-      })),
-      ...procurementLookups.purchaseSubCategories.map((entry) => ({
-        ...entry,
-        section: 'purchaseSubCategories' as CategoryManagerSection,
-        sectionLabel: 'Sub Category',
-        parentLabel: entry.parentId ? getLookupName(procurementLookups.purchaseCategories, entry.parentId) : '-',
-      })),
-    ].sort((left, right) => {
-      if (left.sectionLabel !== right.sectionLabel) {
-        return left.sectionLabel.localeCompare(right.sectionLabel);
-      }
-      const leftOrder = left.sortOrder ?? 999;
-      const rightOrder = right.sortOrder ?? 999;
-      if (leftOrder !== rightOrder) {
-        return leftOrder - rightOrder;
-      }
-      return left.name.localeCompare(right.name);
-    }),
-    [procurementLookups.purchaseCategories, procurementLookups.purchaseSubCategories],
+  const sortedCategoryManagerParents = useMemo(
+    () => [...procurementLookups.purchaseCategories].sort(compareLookupValues),
+    [procurementLookups.purchaseCategories],
   );
+  const sortedCategoryManagerChildren = useMemo(
+    () => [...procurementLookups.purchaseSubCategories].sort(compareLookupValues),
+    [procurementLookups.purchaseSubCategories],
+  );
+  const categoryManagerParentOptions = useMemo(
+    () => sortedCategoryManagerParents.map((entry) => ({ value: entry.id, label: entry.name })),
+    [sortedCategoryManagerParents],
+  );
+  const categoryManagerChildrenByParentId = useMemo(() => {
+    const grouped = new Map<string, ProcurementLookupValue[]>();
+    sortedCategoryManagerChildren.forEach((entry) => {
+      if (!entry.parentId) {
+        return;
+      }
+      const existing = grouped.get(entry.parentId) ?? [];
+      existing.push(entry);
+      grouped.set(entry.parentId, existing);
+    });
+    return grouped;
+  }, [sortedCategoryManagerChildren]);
+  const normalizedCategoryManagerSearch = categoryManagerSearchTerm.trim().toLowerCase();
+  const categoryManagerTree = useMemo(
+    () =>
+      sortedCategoryManagerParents.reduce<
+        Array<{
+          parent: ProcurementLookupValue;
+          children: ProcurementLookupValue[];
+          totalChildren: number;
+        }>
+      >((rows, parent) => {
+        const allChildren = categoryManagerChildrenByParentId.get(parent.id) ?? [];
+        const parentMatches =
+          normalizedCategoryManagerSearch.length === 0 ||
+          parent.name.toLowerCase().includes(normalizedCategoryManagerSearch);
+        const matchingChildren =
+          normalizedCategoryManagerSearch.length === 0
+            ? allChildren
+            : allChildren.filter((entry) => entry.name.toLowerCase().includes(normalizedCategoryManagerSearch));
+
+        if (!parentMatches && matchingChildren.length === 0) {
+          return rows;
+        }
+
+        rows.push({
+          parent,
+          children: normalizedCategoryManagerSearch.length > 0 && parentMatches ? allChildren : matchingChildren,
+          totalChildren: allChildren.length,
+        });
+        return rows;
+      }, []),
+    [categoryManagerChildrenByParentId, normalizedCategoryManagerSearch, sortedCategoryManagerParents],
+  );
+  const selectedCategoryLookupEntry = useMemo(() => {
+    if (!selectedCategoryLookup) {
+      return null;
+    }
+
+    return selectedCategoryLookup.section === 'purchaseCategories'
+      ? procurementLookups.purchaseCategories.find((entry) => entry.id === selectedCategoryLookup.id) || null
+      : procurementLookups.purchaseSubCategories.find((entry) => entry.id === selectedCategoryLookup.id) || null;
+  }, [procurementLookups.purchaseCategories, procurementLookups.purchaseSubCategories, selectedCategoryLookup]);
+  const selectedCategoryParentEntry = useMemo(() => {
+    if (!selectedCategoryLookupEntry) {
+      return null;
+    }
+
+    if (selectedCategoryLookup?.section === 'purchaseCategories') {
+      return selectedCategoryLookupEntry;
+    }
+
+    return sortedCategoryManagerParents.find((entry) => entry.id === selectedCategoryLookupEntry.parentId) || null;
+  }, [selectedCategoryLookup, selectedCategoryLookupEntry, sortedCategoryManagerParents]);
+
+  const buildFallbackApprovedVendorMapping = (item: PurchaseItem): VendorItemMapping => {
+    const fallbackTimestamp =
+      item.updatedAt instanceof Date
+        ? item.updatedAt
+        : item.updatedAt
+          ? new Date(item.updatedAt)
+          : item.createdAt instanceof Date
+            ? item.createdAt
+            : item.createdAt
+              ? new Date(item.createdAt)
+              : new Date('2024-01-01T00:00:00.000Z');
+
+    return {
+      id: `vendor-item-mapping-fallback-${item.id}`,
+      vendorId: item.preferredSupplierId || '',
+      kitchenItemId: item.id,
+      isPreferred: true,
+      leadTimeDays: item.leadTimeDays || undefined,
+      moq: item.minimumOrderQuantity || undefined,
+      lastRate: item.lastPurchaseRate || item.defaultPurchaseCost || undefined,
+      contractRate: undefined,
+      status: 'active',
+      notes: '',
+      createdAt: fallbackTimestamp,
+      updatedAt: fallbackTimestamp,
+    };
+  };
+
+  const buildPurchaseItemEditorSnapshot = (item: PurchaseItem): PurchaseItemEditorSnapshot => {
+    const existingMappings = vendorItemMappings.filter((mapping) => mapping.kitchenItemId === item.id);
+
+    return {
+      itemName: item.itemName,
+      itemCode: item.itemCode || generateItemCode(purchaseItems),
+      categoryId: getCategoryId(item),
+      subCategoryId: item.subCategoryId || '',
+      description: item.description || '',
+      status: item.status,
+      inventoryType: getInventoryType(item),
+      trackInventory: isTracked(item),
+      useInRecipeIngredients: isRecipeIngredientEnabled(item),
+      useAsRecipeOutput: isRecipeOutputEnabled(item),
+      costingMethod: getCostingMethod(item),
+      issueMethod: getIssueMethod(item),
+      purchaseUnit: getPurchaseUnit(item),
+      baseUnit: getBaseUnit(item),
+      conversionFactor: item.conversionFactor,
+      reorderLevel: item.reorderLevel || 0,
+      minimumStockLevel: item.minimumStockLevel || 0,
+      maximumStockLevel: item.maximumStockLevel || 0,
+      allowNegativeStock: Boolean(item.allowNegativeStock),
+      preferredSupplierId: item.preferredSupplierId || '',
+      approvedVendorMappings:
+        existingMappings.length > 0
+          ? existingMappings
+          : item.preferredSupplierId
+            ? [buildFallbackApprovedVendorMapping(item)]
+            : [],
+      defaultPurchaseCost: item.defaultPurchaseCost || 0,
+      leadTimeDays: item.leadTimeDays || 0,
+      minimumOrderQuantity: item.minimumOrderQuantity || 0,
+      taxGroupId: item.taxGroupId || '',
+      assignedStoreIds: getItemAssignedStoreIds(item).filter((storeId) => allowedKitchenStoreIds.has(storeId)),
+    };
+  };
+
+  const serializeApprovedVendorMappings = (mappings: VendorItemMapping[]) =>
+    mappings.map((mapping) => ({
+      id: mapping.id,
+      vendorId: mapping.vendorId,
+      kitchenItemId: mapping.kitchenItemId,
+      isPreferred: Boolean(mapping.isPreferred),
+      leadTimeDays: mapping.leadTimeDays ?? null,
+      moq: mapping.moq ?? null,
+      lastRate: mapping.lastRate ?? null,
+      contractRate: mapping.contractRate ?? null,
+      status: mapping.status,
+      notes: mapping.notes || '',
+    }));
+
+  const getPurchaseItemSourceSignature = (item: PurchaseItem) => {
+    const snapshot = buildPurchaseItemEditorSnapshot(item);
+    return serializeDialogState({
+      id: item.id,
+      ...snapshot,
+      approvedVendorMappings: serializeApprovedVendorMappings(snapshot.approvedVendorMappings),
+    });
+  };
+
+  const applyEditingItemSnapshot = (item: PurchaseItem) => {
+    const snapshot = buildPurchaseItemEditorSnapshot(item);
+
+    setEditingItem(item);
+    setFormItemName(snapshot.itemName);
+    setFormItemCode(snapshot.itemCode);
+    setFormCategoryId(snapshot.categoryId);
+    setFormSubCategoryId(snapshot.subCategoryId);
+    setFormDescription(snapshot.description);
+    setFormStatus(snapshot.status);
+    setFormInventoryType(snapshot.inventoryType);
+    setFormTrackInventory(snapshot.trackInventory);
+    setFormUseInRecipeIngredients(snapshot.useInRecipeIngredients);
+    setFormUseAsRecipeOutput(snapshot.useAsRecipeOutput);
+    setFormCostingMethod(snapshot.costingMethod);
+    setFormIssueMethod(snapshot.issueMethod);
+    setFormPurchaseUnit(snapshot.purchaseUnit);
+    setFormBaseUnit(snapshot.baseUnit);
+    setFormConversionFactor(snapshot.conversionFactor);
+    setFormReorderLevel(snapshot.reorderLevel);
+    setFormMinimumStockLevel(snapshot.minimumStockLevel);
+    setFormMaximumStockLevel(snapshot.maximumStockLevel);
+    setFormAllowNegativeStock(snapshot.allowNegativeStock);
+    setFormPreferredSupplierId(snapshot.preferredSupplierId);
+    setFormApprovedVendors(snapshot.approvedVendorMappings);
+    setFormDefaultPurchaseCost(snapshot.defaultPurchaseCost);
+    setFormLeadTimeDays(snapshot.leadTimeDays);
+    setFormMinimumOrderQuantity(snapshot.minimumOrderQuantity);
+    setFormTaxGroupId(snapshot.taxGroupId);
+    setFormAssignedStoreIds(snapshot.assignedStoreIds);
+
+    editingItemSourceSignatureRef.current = getPurchaseItemSourceSignature(item);
+    editingItemFormSignatureRef.current = serializeDialogState({
+      ...snapshot,
+      approvedVendorMappings: serializeApprovedVendorMappings(snapshot.approvedVendorMappings),
+    });
+  };
 
   const scrollToStoreAssignment = () => {
     if (typeof document === 'undefined') {
@@ -1398,6 +1788,8 @@ export function PurchaseItemMaster({
   const resetForm = (itemCode: string, preservedDefaults?: Partial<BatchEntryDefaults>) => {
     const preservedCategoryId = preservedDefaults?.categoryId || fallbackPurchaseCategoryId;
     const suggestedSetup = getCategorySuggestedSetup(preservedCategoryId);
+    editingItemSourceSignatureRef.current = null;
+    editingItemFormSignatureRef.current = null;
 
     setActiveDialogTab('category-policy');
     setShowCategoryManager(false);
@@ -1405,6 +1797,9 @@ export function PurchaseItemMaster({
     setShowVendorSection(false);
     setShowStoreSection(false);
     setShowSetupSection(false);
+    setSelectedCategoryLookup(null);
+    setCategoryManagerSearchTerm('');
+    setExpandedCategoryIds([]);
     resetCategoryManagerDraft('purchaseCategories');
     setFormItemName('');
     setFormItemCode(itemCode);
@@ -1444,6 +1839,8 @@ export function PurchaseItemMaster({
 
   const closeDialog = () => {
     setEditingItem(null);
+    editingItemSourceSignatureRef.current = null;
+    editingItemFormSignatureRef.current = null;
     setActionsOpen(false);
     setExpandedApprovedVendorId(null);
     setActiveDialogTab('category-policy');
@@ -1452,6 +1849,9 @@ export function PurchaseItemMaster({
     setShowVendorSection(false);
     setShowStoreSection(false);
     setShowSetupSection(false);
+    setSelectedCategoryLookup(null);
+    setCategoryManagerSearchTerm('');
+    setExpandedCategoryIds([]);
     resetCategoryManagerDraft('purchaseCategories');
     setDialogOpen(false);
   };
@@ -1475,66 +1875,14 @@ export function PurchaseItemMaster({
   };
 
   const handleEdit = (item: PurchaseItem) => {
-    const categoryId = getCategoryId(item);
-    const existingMappings = vendorItemMappings.filter((mapping) => mapping.kitchenItemId === item.id);
-    setEditingItem(item);
     setActiveDialogTab('category-policy');
     setShowCategoryManager(false);
     setShowAdvancedSection(false);
-    setShowVendorSection(existingMappings.length > 0);
+    setShowVendorSection(vendorItemMappings.some((mapping) => mapping.kitchenItemId === item.id) || Boolean(item.preferredSupplierId));
     setShowStoreSection(false);
     setShowSetupSection(false);
-    resetCategoryManagerDraft('purchaseCategories', categoryId);
-    setFormItemName(item.itemName);
-    setFormItemCode(item.itemCode || generateItemCode(purchaseItems));
-    setFormCategoryId(categoryId);
-    setFormSubCategoryId(item.subCategoryId || '');
-    setFormDescription(item.description || '');
-    setFormStatus(item.status);
-    setFormInventoryType(getInventoryType(item));
-    setFormTrackInventory(isTracked(item));
-    setFormUseInRecipeIngredients(isRecipeIngredientEnabled(item));
-    setFormUseAsRecipeOutput(isRecipeOutputEnabled(item));
-    setFormCostingMethod(getCostingMethod(item));
-    setFormIssueMethod(getIssueMethod(item));
-    setFormPurchaseUnit(getPurchaseUnit(item));
-    setFormBaseUnit(getBaseUnit(item));
-    setFormConversionFactor(item.conversionFactor);
-    setFormReorderLevel(item.reorderLevel || 0);
-    setFormMinimumStockLevel(item.minimumStockLevel || 0);
-    setFormMaximumStockLevel(item.maximumStockLevel || 0);
-    setFormAllowNegativeStock(Boolean(item.allowNegativeStock));
-    setFormPreferredSupplierId(item.preferredSupplierId || '');
-    {
-      if (existingMappings.length > 0) {
-        setFormApprovedVendors(existingMappings);
-      } else if (item.preferredSupplierId) {
-        const now = new Date();
-        setFormApprovedVendors([
-          {
-            id: `vendor-item-mapping-${Date.now()}`,
-            vendorId: item.preferredSupplierId,
-            kitchenItemId: item.id,
-            isPreferred: true,
-            leadTimeDays: item.leadTimeDays || undefined,
-            moq: item.minimumOrderQuantity || undefined,
-            lastRate: item.lastPurchaseRate || item.defaultPurchaseCost || undefined,
-            contractRate: undefined,
-            status: 'active',
-            notes: '',
-            createdAt: now,
-            updatedAt: now,
-          },
-        ]);
-      } else {
-        setFormApprovedVendors([]);
-      }
-    }
-    setFormDefaultPurchaseCost(item.defaultPurchaseCost || 0);
-    setFormLeadTimeDays(item.leadTimeDays || 0);
-    setFormMinimumOrderQuantity(item.minimumOrderQuantity || 0);
-    setFormTaxGroupId(item.taxGroupId || '');
-    setFormAssignedStoreIds(getItemAssignedStoreIds(item).filter((storeId) => allowedKitchenStoreIds.has(storeId)));
+    resetCategoryManagerDraft('purchaseCategories', getCategoryId(item));
+    applyEditingItemSnapshot(item);
     setActionsOpen(false);
     setExpandedApprovedVendorId(null);
     setDialogOpen(true);
@@ -1577,8 +1925,34 @@ export function PurchaseItemMaster({
     setCategoryManagerDraft(createEmptyCategoryManagerDraft(section, section === 'purchaseSubCategories' ? parentId : ''));
   };
 
+  const openNewCategoryDraft = () => {
+    setShowCategoryManager(true);
+    setSelectedCategoryLookup(null);
+    resetCategoryManagerDraft('purchaseCategories');
+  };
+
+  const openNewSubCategoryDraft = (parentId: string) => {
+    if (!parentId) {
+      toast.info('Select a parent category first');
+      return;
+    }
+
+    setShowCategoryManager(true);
+    setSelectedCategoryLookup(null);
+    setExpandedCategoryIds((current) => (current.includes(parentId) ? current : [...current, parentId]));
+    resetCategoryManagerDraft('purchaseSubCategories', parentId);
+  };
+
   const openEditCategoryLookup = (section: CategoryManagerSection, entry: ProcurementLookupValue) => {
     setShowCategoryManager(true);
+    setSelectedCategoryLookup({ section, id: entry.id });
+    setExpandedCategoryIds((current) => {
+      const parentId = section === 'purchaseCategories' ? entry.id : entry.parentId;
+      if (!parentId || current.includes(parentId)) {
+        return current;
+      }
+      return [...current, parentId];
+    });
     setEditingCategoryLookupId(entry.id);
     setCategoryManagerDraft({
       section,
@@ -1662,7 +2036,14 @@ export function PurchaseItemMaster({
       }
     }
 
-    toast.success(created ? 'Category added' : 'Category updated');
+    const savedEntry = savedId ? nextValues.find((entry) => entry.id === savedId) : null;
+    toast.success(created ? `${section === 'purchaseCategories' ? 'Category' : 'Sub category'} added` : `${section === 'purchaseCategories' ? 'Category' : 'Sub category'} updated`);
+
+    if (savedEntry) {
+      openEditCategoryLookup(section, savedEntry);
+      return;
+    }
+
     resetCategoryManagerDraft(section, section === 'purchaseSubCategories' ? categoryManagerDraft.parentId || formCategoryId : formCategoryId);
   };
 
@@ -1684,6 +2065,13 @@ export function PurchaseItemMaster({
           : entry,
       ),
     });
+
+    if (selectedCategoryLookup?.section === section && selectedCategoryLookup.id === entryId) {
+      setCategoryManagerDraft((current) => ({
+        ...current,
+        isActive: currentEntry.status === 'inactive',
+      }));
+    }
   };
 
   const toggleAssignedStore = (storeId: StoreLocation) => {
@@ -2130,40 +2518,40 @@ export function PurchaseItemMaster({
             </div>
           </div>
         ) : (
-          <div className="grid h-full grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <section className="overflow-hidden rounded border border-slate-200 bg-white">
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-slate-200 bg-white">
               <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
                 <h3 className="text-sm font-semibold text-slate-900">Kitchen Stock Register</h3>
                 <span className="text-xs text-slate-500">{itemRows.length} rows</span>
               </div>
-              <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-9">
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">From Date</label>
+              <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="w-[120px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">From</label>
                     <input
                       type="date"
                       value={fromDate}
                       max={toDate || undefined}
                       onChange={(event) => setFromDate(event.target.value)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     />
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">To Date</label>
+                  <div className="w-[120px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">To</label>
                     <input
                       type="date"
                       value={toDate}
                       min={fromDate || undefined}
                       onChange={(event) => setToDate(event.target.value)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     />
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Store</label>
+                  <div className="w-[130px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Store</label>
                     <select
                       value={storeFilter}
                       onChange={(event) => setStoreFilter(event.target.value)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Stores</option>
                       {activeKitchenStoreOptions.map((store) => (
@@ -2173,15 +2561,15 @@ export function PurchaseItemMaster({
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Category</label>
+                  <div className="w-[140px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Category</label>
                     <select
                       value={categoryFilter}
                       onChange={(event) => {
                         setCategoryFilter(event.target.value);
                         setSubCategoryFilter('all');
                       }}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Categories</option>
                       {itemCategoryOptions.map((category) => (
@@ -2191,12 +2579,12 @@ export function PurchaseItemMaster({
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Sub Category</label>
+                  <div className="w-[140px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Subcategory</label>
                     <select
                       value={subCategoryFilter}
                       onChange={(event) => setSubCategoryFilter(event.target.value)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Sub Categories</option>
                       {registerSubCategoryOptions.map((category) => (
@@ -2206,12 +2594,12 @@ export function PurchaseItemMaster({
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Stock Status</label>
+                  <div className="w-[120px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Status</label>
                     <select
                       value={stockFilter}
                       onChange={(event) => setStockFilter(event.target.value as RegisterStockStatusFilter)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Status</option>
                       <option value="out">Out</option>
@@ -2220,12 +2608,12 @@ export function PurchaseItemMaster({
                       <option value="not-tracked">Not Tracked</option>
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Recipe Use</label>
+                  <div className="w-[120px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Recipe</label>
                     <select
                       value={recipeFilter}
                       onChange={(event) => setRecipeFilter(event.target.value as RegisterRecipeFilter)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Items</option>
                       <option value="recipe-enabled">Recipe Enabled</option>
@@ -2233,12 +2621,12 @@ export function PurchaseItemMaster({
                       <option value="recipe-output">Recipe Output</option>
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Setup Issue</label>
+                  <div className="w-[120px]">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Setup</label>
                     <select
                       value={setupFilter}
                       onChange={(event) => setSetupFilter(event.target.value as RegisterSetupFilter)}
-                      className="h-9 w-full rounded border border-slate-300 bg-white px-3 text-sm text-slate-700"
+                      className="h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700"
                     >
                       <option value="all">All Setup</option>
                       <option value="store-missing">Missing Store</option>
@@ -2246,165 +2634,145 @@ export function PurchaseItemMaster({
                       <option value="advanced">Advanced Setup</option>
                     </select>
                   </div>
-                  <div className="md:col-span-2 xl:col-span-1 2xl:col-span-1">
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search Item</label>
+                  <div className="min-w-[220px] flex-1">
+                    <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Search</label>
                     <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
                       <input
                         type="text"
-                        placeholder="Search item or code"
+                        placeholder="Search item, code, category, store"
                         value={searchTerm}
                         onChange={(event) => setSearchTerm(event.target.value)}
-                        className="h-9 w-full rounded border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-700 placeholder:text-slate-400"
+                        className="h-8 w-full rounded border border-slate-300 bg-white pl-8 pr-2 text-xs text-slate-700 placeholder:text-slate-400"
                       />
                     </div>
                   </div>
                 </div>
               </div>
-              <div className="h-[calc(100%-138px)] overflow-auto">
-                <table className="w-full">
-                  <thead className="sticky top-0 bg-slate-50">
+              <div className="min-h-0 flex-1 overflow-auto">
+                <table className="min-w-full">
+                  <thead className="sticky top-0 z-10 bg-slate-50">
                     <tr>
-                      <th className={tableHeadClass}>Item</th>
-                      <th className={tableHeadClass}>Category</th>
-                      <th className={tableHeadClass}>Store</th>
-                      <th className={tableHeadClass}>Unit</th>
-                      <th className={tableHeadClass}>Setup</th>
-                      <th className={`${tableHeadClass} text-right`}>Opening Qty</th>
-                      <th className={`${tableHeadClass} text-right`}>Purchased Qty</th>
-                      <th className={`${tableHeadClass} text-right`}>Issued Qty</th>
-                      <th className={`${tableHeadClass} text-right`}>Balance Qty</th>
-                      <th className={`${tableHeadClass} text-right`}>Reorder Level</th>
-                      <th className={`${tableHeadClass} text-right`}>Stock Value</th>
-                      <th className={tableHeadClass}>Status</th>
-                      <th className={`${tableHeadClass} text-right`}>Action</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[220px]`}>Item</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[120px]`}>Category</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[110px]`}>Store</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[130px]`}>UOM</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[190px]`}>Setup</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[90px] text-right`}>Opening</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[90px] text-right`}>Purchased</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[90px] text-right`}>Issued</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[100px] text-right`}>Balance</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[90px] text-right`}>Reorder</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[90px] text-right`}>Value</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[110px]`}>Status</th>
+                      <th className={`${compactRegisterHeadClass} min-w-[72px] text-right`}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {itemRows.map((item) => (
-                      <tr
-                        key={item.id}
-                        onClick={() => openStockDetailDrawer(item.id)}
-                        className="cursor-pointer border-t border-slate-200 hover:bg-slate-50"
-                      >
-                        <td className={tableCellClass}>
-                          <div className="flex items-center gap-2">
-                            {(item.stockMeta.label === 'Low' || item.stockMeta.label === 'Out') ? (
-                              <AlertTriangle className="size-4 text-amber-600" />
-                            ) : null}
-                            <div>
-                              <div className="font-medium text-slate-900">{item.itemName}</div>
-                              <div className="text-xs text-slate-500">
-                                {item.itemCode || 'No code'}
+                    {itemRows.map((item) => {
+                      const compactUnitSummary = formatCompactUnitSummary(item.purchaseUnit, item.baseUnit, item.conversionFactor);
+                      const compactSetupSummary = getSetupSummary(item);
+                      const categoryLabel = getPurchaseCategoryLabel(item.categoryId);
+                      const subCategoryLabel = getResolvedSubCategoryLabel(item.categoryId, item.subCategoryId);
+                      const storeSummary = formatStoreSummary(stores, item.assignedStoreIds);
+                      const statusLabel = `${item.stockMeta.label} / ${item.status || 'active'}`;
+
+                      return (
+                        <tr
+                          key={item.id}
+                          onClick={() => openStockDetailDrawer(item.id)}
+                          className="cursor-pointer border-t border-slate-200 hover:bg-slate-50"
+                        >
+                          <td className={compactRegisterCellClass} title={`${item.itemName} ${item.itemCode || ''}`.trim()}>
+                            <div className="flex items-center gap-2">
+                              {item.stockMeta.label === 'Low' || item.stockMeta.label === 'Out' ? (
+                                <AlertTriangle className="size-3.5 shrink-0 text-amber-600" />
+                              ) : null}
+                              <div className="min-w-0 truncate">
+                                <span className="font-medium text-slate-900">{item.itemName}</span>
+                                <span className="ml-2 text-[11px] text-slate-500">{item.itemCode || 'No code'}</span>
                               </div>
                             </div>
-                          </div>
-                        </td>
-                        <td className={tableCellClass}>
-                          <div>{getPurchaseCategoryLabel(item.categoryId)}</div>
-                          <div className="text-xs text-slate-500">{getResolvedSubCategoryLabel(item.categoryId, item.subCategoryId)}</div>
-                        </td>
-                        <td className={tableCellClass}>
-                          <div className="text-slate-900">{formatStoreSummary(stores, item.assignedStoreIds)}</div>
-                          <div className="text-xs text-slate-500">{item.assignedStoreIds.length} store{item.assignedStoreIds.length === 1 ? '' : 's'}</div>
-                        </td>
-                        <td className={tableCellClass}>
-                          <div className="text-slate-900">{formatRegisterUnit(item.purchaseUnit)}</div>
-                          <div className="text-xs text-slate-500">1 {formatRegisterUnit(item.purchaseUnit)} = {formatRegisterQuantity(item.conversionFactor)} {formatRegisterUnit(item.baseUnit)}</div>
-                        </td>
-                        <td className={tableCellClass}>
-                          <div className="flex max-w-[230px] flex-wrap gap-1">
-                            <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${item.recipeEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                              {item.recipeEnabled ? 'Recipe OK' : 'Recipe Blocked'}
+                          </td>
+                          <td className={compactRegisterCellClass} title={subCategoryLabel !== '-' ? `${categoryLabel} / ${subCategoryLabel}` : categoryLabel}>
+                            <div className="truncate">{categoryLabel}</div>
+                          </td>
+                          <td className={compactRegisterCellClass} title={storeSummary}>
+                            <div className="truncate text-slate-900">{storeSummary}</div>
+                          </td>
+                          <td className={compactRegisterCellClass} title={compactUnitSummary}>
+                            <div className="truncate text-slate-900">{compactUnitSummary}</div>
+                          </td>
+                          <td className={compactRegisterCellClass} title={compactSetupSummary}>
+                            <div className="max-w-[190px] truncate text-[11px] text-slate-600">{compactSetupSummary}</div>
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right`}>
+                            {item.trackInventory ? `${formatRegisterQuantity(item.openingQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right`}>
+                            {item.trackInventory ? `${formatRegisterQuantity(item.purchasedQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right`}>
+                            {item.trackInventory ? `${formatRegisterQuantity(item.issuedQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right font-medium ${item.stockMeta.textClass}`}>
+                            {item.trackInventory ? `${formatRegisterQuantity(item.balanceQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right`}>
+                            {item.trackInventory ? `${formatRegisterQuantity(item.reorderQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right font-medium text-slate-900`}>
+                            {item.trackInventory ? formatCurrencyPKR(item.stockValue, { compact: true }) : '-'}
+                          </td>
+                          <td className={compactRegisterCellClass} title={statusLabel}>
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${item.stockMeta.badgeClass}`}>
+                              <span className="size-1.5 rounded-full bg-current" />
+                              {statusLabel}
                             </span>
-                            {item.recipeOutputEnabled ? (
-                              <span className="inline-flex rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">Output</span>
-                            ) : null}
-                            <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${item.trackInventory ? 'bg-slate-100 text-slate-700' : 'bg-amber-100 text-amber-700'}`}>
-                              {item.trackInventory ? 'Tracked' : 'No Track'}
-                            </span>
-                            {item.missingStoreAssignment ? (
-                              <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">No Store</span>
-                            ) : null}
-                            {item.conversionRisk ? (
-                              <span className="inline-flex rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">Unit Risk</span>
-                            ) : null}
-                            <span className="inline-flex rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                              {getCostingMethodLabel(getCostingMethod(item))}
-                            </span>
-                            <span className="inline-flex rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                              {getIssueMethodLabel(getIssueMethod(item))}
-                            </span>
-                          </div>
-                        </td>
-                        <td className={`${tableCellClass} text-right`}>
-                          {item.trackInventory ? `${formatRegisterQuantity(item.openingQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
-                        </td>
-                        <td className={`${tableCellClass} text-right`}>
-                          {item.trackInventory ? `${formatRegisterQuantity(item.purchasedQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
-                        </td>
-                        <td className={`${tableCellClass} text-right`}>
-                          {item.trackInventory ? `${formatRegisterQuantity(item.issuedQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
-                        </td>
-                        <td className={`${tableCellClass} text-right ${item.stockMeta.textClass}`}>
-                          {item.trackInventory ? `${formatRegisterQuantity(item.balanceQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
-                        </td>
-                        <td className={`${tableCellClass} text-right`}>
-                          {item.trackInventory ? `${formatRegisterQuantity(item.reorderQty)} ${formatRegisterUnit(item.purchaseUnit)}` : '-'}
-                        </td>
-                        <td className={`${tableCellClass} text-right font-medium text-slate-900`}>
-                          {item.trackInventory ? formatCurrencyPKR(item.stockValue, { compact: true }) : '-'}
-                        </td>
-                        <td className={tableCellClass}>
-                          <div className="flex flex-col gap-1">
-                            <span className={`inline-flex w-fit rounded px-2 py-0.5 text-[11px] font-medium ${item.stockMeta.badgeClass}`}>
-                              {item.stockMeta.label}
-                            </span>
-                            <span className={`inline-flex w-fit rounded px-2 py-0.5 text-[11px] font-medium ${(item.status || 'active') === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {item.status || 'active'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className={`${tableCellClass} text-right`}>
-                          <div className="flex items-center justify-end gap-1">
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openStockDetailDrawer(item.id);
-                              }}
-                              className="inline-flex h-7 items-center gap-1 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <Eye className="size-3.5" />
-                              View
-                            </button>
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleEdit(item);
-                              }}
-                              className="inline-flex h-7 items-center gap-1 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <Edit2 className="size-3.5" />
-                              Edit
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className={`${compactRegisterCellClass} text-right`}>
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openStockDetailDrawer(item.id);
+                                }}
+                                className="inline-flex size-7 items-center justify-center rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
+                                title="View stock detail"
+                                aria-label={`View ${item.itemName}`}
+                              >
+                                <Eye className="size-3.5" />
+                              </button>
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleEdit(item);
+                                }}
+                                className="inline-flex size-7 items-center justify-center rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
+                                title="Edit item"
+                                aria-label={`Edit ${item.itemName}`}
+                              >
+                                <Edit2 className="size-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            <div className="grid h-full grid-cols-1 gap-4 overflow-hidden">
+            <div className="grid shrink-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_300px]">
               <section className="overflow-hidden rounded border border-slate-200 bg-white">
                 <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
                   <h3 className="text-sm font-semibold text-slate-900">Reorder Watchlist</h3>
                   <AlertTriangle className="size-4 text-slate-400" />
                 </div>
-                <div className="overflow-auto">
+                <div className="max-h-56 overflow-auto">
                   <table className="w-full">
-                    <thead className="bg-slate-50">
+                    <thead className="sticky top-0 bg-slate-50">
                       <tr>
                         <th className={tableHeadClass}>Item</th>
                         <th className={tableHeadClass}>Store</th>
@@ -2449,9 +2817,9 @@ export function PurchaseItemMaster({
                   <h3 className="text-sm font-semibold text-slate-900">Store Coverage</h3>
                   <Warehouse className="size-4 text-slate-400" />
                 </div>
-                <div className="overflow-auto">
+                <div className="max-h-56 overflow-auto">
                   <table className="w-full">
-                    <thead className="bg-slate-50">
+                    <thead className="sticky top-0 bg-slate-50">
                       <tr>
                         <th className={tableHeadClass}>Kitchen Store</th>
                         <th className={`${tableHeadClass} text-right`}>Items</th>
@@ -3197,10 +3565,16 @@ export function PurchaseItemMaster({
                       <button
                         type="button"
                         onClick={() => {
-                          setShowCategoryManager((current) => !current);
-                          if (!showCategoryManager) {
-                            resetCategoryManagerDraft('purchaseCategories', formCategoryId);
+                          if (showCategoryManager) {
+                            setShowCategoryManager(false);
+                            return;
                           }
+
+                          setShowCategoryManager(true);
+                          setSelectedCategoryLookup(null);
+                          setCategoryManagerSearchTerm('');
+                          setExpandedCategoryIds(procurementLookups.purchaseCategories.map((entry) => entry.id));
+                          resetCategoryManagerDraft('purchaseCategories', formCategoryId);
                         }}
                         className={quietButtonClass}
                       >
@@ -3210,136 +3584,317 @@ export function PurchaseItemMaster({
 
                     {showCategoryManager ? (
                       <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            {editingCategoryLookupId ? 'Edit Category' : 'Manage Category Lists'}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => resetCategoryManagerDraft('purchaseCategories', formCategoryId)}
-                            className="inline-flex h-8 items-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[180px_220px_minmax(0,1fr)_160px]">
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-700">List Type</label>
-                            <select
-                              value={categoryManagerDraft.section}
-                              onChange={(event) =>
-                                setCategoryManagerDraft((current) => ({
-                                  ...current,
-                                  section: event.target.value as CategoryManagerSection,
-                                  parentId:
-                                    event.target.value === 'purchaseSubCategories'
-                                      ? current.parentId || formCategoryId
-                                      : '',
-                                }))
-                              }
-                              className={inputClass}
-                            >
-                              <option value="purchaseCategories">Category</option>
-                              <option value="purchaseSubCategories">Sub Category</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-700">Parent Category</label>
-                            <select
-                              value={categoryManagerDraft.parentId}
-                              onChange={(event) => setCategoryManagerDraft((current) => ({ ...current, parentId: event.target.value }))}
-                              disabled={categoryManagerDraft.section !== 'purchaseSubCategories'}
-                              className={inputClass}
-                            >
-                              <option value="">Select category</option>
-                              {itemCategoryOptions.map((category) => (
-                                <option key={category.value} value={category.value}>
-                                  {category.label}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-1 block text-xs font-medium text-slate-700">Name</label>
-                            <input
-                              type="text"
-                              value={categoryManagerDraft.name}
-                              onChange={(event) => setCategoryManagerDraft((current) => ({ ...current, name: event.target.value }))}
-                              className={inputClass}
-                              placeholder="Enter category name"
-                            />
-                          </div>
-                          <div className="flex items-end justify-between gap-3">
-                            <label className="inline-flex h-8 items-center gap-2 text-sm text-slate-700">
-                              <input
-                                type="checkbox"
-                                checked={categoryManagerDraft.isActive}
-                                onChange={(event) =>
-                                  setCategoryManagerDraft((current) => ({ ...current, isActive: event.target.checked }))
-                                }
-                                className="size-4 rounded border-slate-300 text-blue-600"
-                              />
-                              Active
-                            </label>
-                            <button
-                              type="button"
-                              onClick={saveCategoryManagerDraft}
-                              className="inline-flex h-8 items-center gap-1.5 rounded border border-blue-600 bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
-                            >
-                              <Save className="size-3.5" />
-                              {editingCategoryLookupId ? 'Save' : 'Add'}
-                            </button>
-                          </div>
-                        </div>
+                        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,35%)_minmax(0,65%)]">
+                          <div className="space-y-3 rounded-md border border-slate-200 bg-white p-3">
+                            <div className="flex items-center gap-2">
+                              <div className="relative min-w-0 flex-1">
+                                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                                <input
+                                  type="text"
+                                  value={categoryManagerSearchTerm}
+                                  onChange={(event) => setCategoryManagerSearchTerm(event.target.value)}
+                                  className="h-8 w-full rounded border border-slate-300 bg-white pl-7 pr-2.5 text-sm text-slate-700"
+                                  placeholder="Search categories..."
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={openNewCategoryDraft}
+                                className="inline-flex h-8 shrink-0 items-center gap-1 rounded border border-blue-600 bg-blue-600 px-2.5 text-xs font-medium text-white hover:bg-blue-700"
+                              >
+                                <Plus className="size-3.5" />
+                                Category
+                              </button>
+                            </div>
 
-                        <div className="mt-3 overflow-auto rounded border border-slate-200 bg-white">
-                          <table className="w-full text-xs">
-                            <thead className="bg-slate-100">
-                              <tr>
-                                <th className="px-3 py-2 text-left font-semibold text-slate-700">Type</th>
-                                <th className="px-3 py-2 text-left font-semibold text-slate-700">Parent</th>
-                                <th className="px-3 py-2 text-left font-semibold text-slate-700">Name</th>
-                                <th className="px-3 py-2 text-center font-semibold text-slate-700">Status</th>
-                                <th className="px-3 py-2 text-right font-semibold text-slate-700">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {categoryManagerRows.map((entry) => (
-                                <tr key={`${entry.section}-${entry.id}`} className="border-t">
-                                  <td className="px-3 py-2 text-slate-700">{entry.sectionLabel}</td>
-                                  <td className="px-3 py-2 text-slate-700">{entry.parentLabel}</td>
-                                  <td className="px-3 py-2">
-                                    <div className="font-medium text-slate-900">{entry.name}</div>
-                                    <div className="text-[11px] text-slate-500">{entry.code}</div>
-                                  </td>
-                                  <td className="px-3 py-2 text-center">
-                                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${entry.status === 'inactive' ? 'bg-slate-100 text-slate-600' : 'bg-emerald-100 text-emerald-700'}`}>
-                                      {entry.status === 'inactive' ? 'Inactive' : 'Active'}
-                                    </span>
-                                  </td>
-                                  <td className="px-3 py-2 text-right">
-                                    <div className="inline-flex items-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => openEditCategoryLookup(entry.section, entry)}
-                                        className="rounded p-1.5 text-blue-600 hover:bg-blue-100"
-                                        title="Edit category"
+                            <div className="max-h-[420px] space-y-1 overflow-auto pr-1">
+                              {categoryManagerTree.length === 0 ? (
+                                <div className="rounded border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
+                                  No categories match the current search.
+                                </div>
+                              ) : (
+                                categoryManagerTree.map((row) => {
+                                  const parentSelected =
+                                    selectedCategoryLookup?.section === 'purchaseCategories' &&
+                                    selectedCategoryLookup.id === row.parent.id;
+                                  const showChildren =
+                                    normalizedCategoryManagerSearch.length > 0 || expandedCategoryIds.includes(row.parent.id);
+
+                                  return (
+                                    <div key={row.parent.id} className="rounded border border-slate-200/80 bg-white">
+                                      <div
+                                        className={`flex items-center gap-1.5 px-2 py-1.5 ${
+                                          parentSelected ? 'bg-blue-50' : 'hover:bg-slate-50'
+                                        }`}
                                       >
-                                        <Edit2 className="size-3.5" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleCategoryLookupActive(entry.section, entry.id)}
-                                        className="rounded px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                                      >
-                                        {entry.status === 'inactive' ? 'Activate' : 'Deactivate'}
-                                      </button>
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            setExpandedCategoryIds((current) =>
+                                              current.includes(row.parent.id)
+                                                ? current.filter((entryId) => entryId !== row.parent.id)
+                                                : [...current, row.parent.id],
+                                            );
+                                          }}
+                                          className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                                          title={showChildren ? 'Collapse category' : 'Expand category'}
+                                        >
+                                          {showChildren ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => openEditCategoryLookup('purchaseCategories', row.parent)}
+                                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                        >
+                                          <span className={`truncate text-sm font-medium ${row.parent.status === 'inactive' ? 'text-slate-500' : 'text-slate-800'}`}>
+                                            {row.parent.name}
+                                          </span>
+                                          <span className="shrink-0 text-[11px] text-slate-500">({row.totalChildren})</span>
+                                          <span
+                                            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                              row.parent.status === 'inactive'
+                                                ? 'bg-slate-100 text-slate-600'
+                                                : 'bg-emerald-100 text-emerald-700'
+                                            }`}
+                                          >
+                                            {row.parent.status === 'inactive' ? 'Inactive' : 'Active'}
+                                          </span>
+                                        </button>
+                                        <div className="flex shrink-0 items-center gap-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              openEditCategoryLookup('purchaseCategories', row.parent);
+                                            }}
+                                            className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-blue-700"
+                                            title="Edit category"
+                                          >
+                                            <Edit2 className="size-3.5" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              toggleCategoryLookupActive('purchaseCategories', row.parent.id);
+                                            }}
+                                            className={`rounded p-1 ${
+                                              row.parent.status === 'inactive'
+                                                ? 'text-slate-400 hover:bg-emerald-50 hover:text-emerald-700'
+                                                : 'text-emerald-600 hover:bg-slate-100 hover:text-slate-700'
+                                            }`}
+                                            title={row.parent.status === 'inactive' ? 'Activate category' : 'Deactivate category'}
+                                          >
+                                            <Power className="size-3.5" />
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {showChildren ? (
+                                        <div className="border-t border-slate-100 px-2 py-1">
+                                          {row.children.length === 0 ? (
+                                            <div className="px-7 py-1 text-[11px] text-slate-400">No sub-categories</div>
+                                          ) : (
+                                            row.children.map((child) => {
+                                              const childSelected =
+                                                selectedCategoryLookup?.section === 'purchaseSubCategories' &&
+                                                selectedCategoryLookup.id === child.id;
+
+                                              return (
+                                                <div
+                                                  key={child.id}
+                                                  className={`flex items-center gap-2 rounded px-1.5 py-1 ${
+                                                    childSelected ? 'bg-blue-50' : 'hover:bg-slate-50'
+                                                  }`}
+                                                >
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => openEditCategoryLookup('purchaseSubCategories', child)}
+                                                    className="flex min-w-0 flex-1 items-center gap-2 pl-5 text-left"
+                                                  >
+                                                    <span className="text-slate-300">└</span>
+                                                    <span className={`truncate text-sm ${child.status === 'inactive' ? 'text-slate-500' : 'text-slate-700'}`}>
+                                                      {child.name}
+                                                    </span>
+                                                    <span
+                                                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                                        child.status === 'inactive'
+                                                          ? 'bg-slate-100 text-slate-600'
+                                                          : 'bg-emerald-100 text-emerald-700'
+                                                      }`}
+                                                    >
+                                                      {child.status === 'inactive' ? 'Inactive' : 'Active'}
+                                                    </span>
+                                                  </button>
+                                                  <div className="flex shrink-0 items-center gap-0.5">
+                                                    <button
+                                                      type="button"
+                                                      onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        openEditCategoryLookup('purchaseSubCategories', child);
+                                                      }}
+                                                      className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-blue-700"
+                                                      title="Edit sub category"
+                                                    >
+                                                      <Edit2 className="size-3.5" />
+                                                    </button>
+                                                    <button
+                                                      type="button"
+                                                      onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        toggleCategoryLookupActive('purchaseSubCategories', child.id);
+                                                      }}
+                                                      className={`rounded p-1 ${
+                                                        child.status === 'inactive'
+                                                          ? 'text-slate-400 hover:bg-emerald-50 hover:text-emerald-700'
+                                                          : 'text-emerald-600 hover:bg-slate-100 hover:text-slate-700'
+                                                      }`}
+                                                      title={child.status === 'inactive' ? 'Activate sub category' : 'Deactivate sub category'}
+                                                    >
+                                                      <Power className="size-3.5" />
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })
+                                          )}
+                                        </div>
+                                      ) : null}
                                     </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-3 rounded-md border border-slate-200 bg-white p-3">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-700">Category Details</div>
+                                <div className="text-xs text-slate-500">
+                                  Slug is generated automatically and stays hidden from users.
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {selectedCategoryLookup?.section === 'purchaseCategories' && selectedCategoryLookupEntry ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openNewSubCategoryDraft(selectedCategoryLookupEntry.id)}
+                                    className="inline-flex h-8 items-center gap-1 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                  >
+                                    <Plus className="size-3.5" />
+                                    Sub Category
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={openNewCategoryDraft}
+                                  className="inline-flex h-8 items-center gap-1 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                >
+                                  Clear
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                              <div className="md:col-span-2">
+                                <label className={labelClass}>Name</label>
+                                <input
+                                  type="text"
+                                  value={categoryManagerDraft.name}
+                                  onChange={(event) => setCategoryManagerDraft((current) => ({ ...current, name: event.target.value }))}
+                                  className={inputClass}
+                                  placeholder="Enter category name"
+                                />
+                              </div>
+
+                              <div>
+                                <label className={labelClass}>Type</label>
+                                <select
+                                  value={categoryManagerDraft.section}
+                                  onChange={(event) =>
+                                    setCategoryManagerDraft((current) => ({
+                                      ...current,
+                                      section: event.target.value as CategoryManagerSection,
+                                      parentId:
+                                        event.target.value === 'purchaseSubCategories'
+                                          ? current.parentId ||
+                                            (selectedCategoryLookup?.section === 'purchaseCategories'
+                                              ? selectedCategoryLookup.id
+                                              : selectedCategoryParentEntry?.id || formCategoryId)
+                                          : '',
+                                    }))
+                                  }
+                                  disabled={Boolean(editingCategoryLookupId)}
+                                  className={inputClass}
+                                >
+                                  <option value="purchaseCategories">Category</option>
+                                  <option value="purchaseSubCategories">Sub Category</option>
+                                </select>
+                              </div>
+
+                              {categoryManagerDraft.section === 'purchaseSubCategories' ? (
+                                <div>
+                                  <label className={labelClass}>Parent Category</label>
+                                  <select
+                                    value={categoryManagerDraft.parentId}
+                                    onChange={(event) =>
+                                      setCategoryManagerDraft((current) => ({ ...current, parentId: event.target.value }))
+                                    }
+                                    className={inputClass}
+                                  >
+                                    <option value="">Select category</option>
+                                    {categoryManagerParentOptions.map((category) => (
+                                      <option key={category.value} value={category.value}>
+                                        {category.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ) : null}
+
+                              <div className="flex items-end">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCategoryManagerDraft((current) => ({
+                                      ...current,
+                                      isActive: !current.isActive,
+                                    }))
+                                  }
+                                  className={`inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium ${
+                                    categoryManagerDraft.isActive
+                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : 'border-slate-200 bg-slate-100 text-slate-600'
+                                  }`}
+                                >
+                                  {categoryManagerDraft.isActive ? 'Active' : 'Inactive'}
+                                </button>
+                              </div>
+
+                              {selectedCategoryLookupEntry ? (
+                                <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 md:col-span-2">
+                                  <span className="font-medium text-slate-700">Selected:</span>{' '}
+                                  {selectedCategoryLookupEntry.name}
+                                  {selectedCategoryLookup?.section === 'purchaseSubCategories' && selectedCategoryParentEntry
+                                    ? ` under ${selectedCategoryParentEntry.name}`
+                                    : ''}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="flex items-center justify-end gap-2 border-t border-slate-200 pt-3">
+                              <button
+                                type="button"
+                                onClick={saveCategoryManagerDraft}
+                                className="inline-flex h-8 items-center gap-1.5 rounded border border-blue-600 bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
+                              >
+                                <Save className="size-3.5" />
+                                {editingCategoryLookupId ? 'Save' : categoryManagerDraft.section === 'purchaseSubCategories' ? 'Add Sub Category' : 'Add Category'}
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     ) : null}

@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 0.0.0.0 --port 4173 --strictPort",
-    "preview": "vite preview --host 0.0.0.0 --port 4173 --strictPort"
+    "preview": "vite preview --host 0.0.0.0 --port 4173 --strictPort",
+    "test:recipe-costing": "node scripts/recipe-costing-math.test.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

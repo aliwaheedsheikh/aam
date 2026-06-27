@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
+import { RealtimeService } from "../realtime/realtime.service";
 
 type FrontendServiceBookingPayload = {
   id: string;
@@ -22,7 +23,10 @@ type FrontendServiceBookingPayload = {
 
 @Injectable()
 export class ServiceBookingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtimeService: RealtimeService,
+  ) {}
 
   async findAllForFrontend() {
     const bookings = await this.prisma.serviceBooking.findMany({
@@ -48,15 +52,24 @@ export class ServiceBookingsService {
     return this.mapFrontendBooking(booking);
   }
 
-  async createFrontendBooking(booking: FrontendServiceBookingPayload) {
+  async createFrontendBooking(booking: FrontendServiceBookingPayload, originClientId?: string) {
     await this.prisma.$transaction(async (tx) => {
       await this.upsertFrontendBooking(tx, booking);
+    });
+
+    this.realtimeService.notifyResourceChanged("service-bookings", "upsert", {
+      recordId: booking.id,
+      originClientId,
     });
 
     return this.findOneForFrontend(booking.id);
   }
 
-  async updateFrontendBooking(externalId: string, booking: FrontendServiceBookingPayload) {
+  async updateFrontendBooking(
+    externalId: string,
+    booking: FrontendServiceBookingPayload,
+    originClientId?: string,
+  ) {
     await this.ensureFrontendBookingExists(externalId);
 
     await this.prisma.$transaction(async (tx) => {
@@ -66,10 +79,15 @@ export class ServiceBookingsService {
       });
     });
 
+    this.realtimeService.notifyResourceChanged("service-bookings", "upsert", {
+      recordId: externalId,
+      originClientId,
+    });
+
     return this.findOneForFrontend(externalId);
   }
 
-  async removeFrontendBooking(externalId: string) {
+  async removeFrontendBooking(externalId: string, originClientId?: string) {
     const deleted = await this.prisma.serviceBooking.deleteMany({
       where: {
         externalId,
@@ -80,13 +98,18 @@ export class ServiceBookingsService {
       throw new NotFoundException(`Service booking ${externalId} was not found`);
     }
 
+    this.realtimeService.notifyResourceChanged("service-bookings", "delete", {
+      recordId: externalId,
+      originClientId,
+    });
+
     return {
       deleted: true,
       id: externalId,
     };
   }
 
-  async syncFrontendBookings(bookings: FrontendServiceBookingPayload[]) {
+  async syncFrontendBookings(bookings: FrontendServiceBookingPayload[], originClientId?: string) {
     const incomingExternalIds = bookings.map((booking) => booking.id);
 
     await this.prisma.$transaction(async (tx) => {
@@ -101,6 +124,10 @@ export class ServiceBookingsService {
           },
         },
       });
+    });
+
+    this.realtimeService.notifyResourceChanged("service-bookings", "bulk-sync", {
+      originClientId,
     });
 
     return this.findAllForFrontend();

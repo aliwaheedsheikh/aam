@@ -61,23 +61,26 @@ export function GRNDialog({
   const [items, setItems] = useState<GoodsReceiptItem[]>([]);
   const [qualityRemarks, setQualityRemarks] = useState('');
   const [createVendorBill, setCreateVendorBill] = useState(true);
+  const [closeOutstandingBalance, setCloseOutstandingBalance] = useState(false);
 
   const storeOptions = useMemo(() => buildAssignableStoreOptions(stores), [stores]);
+  const previousReceivedQuantities = purchaseOrder?.receivedQuantities ?? {};
 
   useEffect(() => {
     if (!open || !purchaseOrder) {
       setItems([]);
       setQualityRemarks('');
       setCreateVendorBill(true);
+      setCloseOutstandingBalance(false);
       return;
     }
 
-    const previousReceipts = purchaseOrder.receivedQuantities ?? {};
     const initialItems: GoodsReceiptItem[] = purchaseOrder.items
       .map((poItem) => {
         const linkedPurchaseItem = purchaseItems.find((entry) => entry.id === poItem.purchaseItemId);
-        const alreadyReceived = poItem.receivedQuantity ?? previousReceipts[poItem.purchaseItemId] ?? 0;
-        const pendingQuantity = Math.max(0, poItem.quantity - alreadyReceived);
+        const alreadyReceived = poItem.receivedQuantity ?? previousReceivedQuantities[poItem.purchaseItemId] ?? 0;
+        const alreadyClosed = poItem.closedQuantity ?? 0;
+        const pendingQuantity = Math.max(0, poItem.quantity - alreadyReceived - alreadyClosed);
 
         return {
           purchaseItemId: poItem.purchaseItemId,
@@ -98,14 +101,15 @@ export function GRNDialog({
     setDefaultDestinationStore(initialItems[0]?.destinationStore || storeOptions[0]?.id || '');
     setQualityRemarks('');
     setCreateVendorBill(true);
-  }, [open, purchaseItems, purchaseOrder, storeOptions]);
+    setCloseOutstandingBalance(false);
+  }, [open, previousReceivedQuantities, purchaseItems, purchaseOrder, storeOptions]);
 
   if (!open || !purchaseOrder) {
     return null;
   }
 
   const vendor = vendors.find((entry) => entry.id === purchaseOrder.vendorId) || null;
-  const previousReceivedQuantities = purchaseOrder.receivedQuantities ?? {};
+  const totalPreviouslyClosed = purchaseOrder.items.reduce((sum, item) => sum + (item.closedQuantity ?? 0), 0);
 
   const totalOrderedOnPO = purchaseOrder.items.reduce((sum, item) => sum + item.quantity, 0);
   const totalPreviouslyReceived = purchaseOrder.items.reduce(
@@ -118,6 +122,14 @@ export function GRNDialog({
   const totalRejected = items.reduce((sum, item) => sum + item.rejectedQuantity, 0);
   const totalValue = items.reduce((sum, item) => sum + item.totalValue, 0);
   const acceptedLineCount = items.filter((item) => item.acceptedQuantity > 0).length;
+  const projectedOutstandingAfterThisGRN = purchaseOrder.items.reduce((sum, poItem) => {
+    const alreadyReceived = poItem.receivedQuantity ?? previousReceivedQuantities[poItem.purchaseItemId] ?? 0;
+    const alreadyClosed = poItem.closedQuantity ?? 0;
+    const receivedNow = items.find((item) => item.purchaseItemId === poItem.purchaseItemId)?.acceptedQuantity ?? 0;
+    const nextReceived = Math.min(poItem.quantity, alreadyReceived + receivedNow);
+    return sum + Math.max(poItem.quantity - nextReceived - alreadyClosed, 0);
+  }, 0);
+  const projectedCloseQuantity = closeOutstandingBalance ? projectedOutstandingAfterThisGRN : 0;
 
   const calculateQualityStatus = (): 'approved' | 'rejected' | 'partial' => {
     const hasRejections = items.some((item) => item.rejectedQuantity > 0);
@@ -259,6 +271,16 @@ export function GRNDialog({
     setItems(nextItems);
   };
 
+  const handleRateChange = (index: number, value: number) => {
+    const nextItems = [...items];
+    const item = nextItems[index];
+    const ratePerUnit = Math.max(value, 0);
+
+    item.ratePerUnit = ratePerUnit;
+    item.totalValue = item.acceptedQuantity * ratePerUnit;
+    setItems(nextItems);
+  };
+
   const handleStoreChange = (index: number, destinationStore: StoreLocation) => {
     const nextItems = [...items];
     nextItems[index] = {
@@ -303,8 +325,14 @@ export function GRNDialog({
       return;
     }
 
-    if (totalRejected > 0 && !qualityRemarks.trim()) {
-      toast.error('Please add quality remarks for rejected quantities');
+    const hasMissingRate = items.some((item) => item.acceptedQuantity > 0 && item.ratePerUnit <= 0);
+    if (hasMissingRate) {
+      toast.error('Enter a valid rate for every accepted line before posting the GRN');
+      return;
+    }
+
+    if ((totalRejected > 0 || (closeOutstandingBalance && projectedOutstandingAfterThisGRN > 0)) && !qualityRemarks.trim()) {
+      toast.error('Please add remarks for rejected or short-closed quantities');
       return;
     }
 
@@ -344,35 +372,79 @@ export function GRNDialog({
       acc[poItem.purchaseItemId] = Math.min(poItem.quantity, alreadyReceived + receivedNow);
       return acc;
     }, {} as Record<string, number>);
+    const nextClosedQuantities = purchaseOrder.items.reduce((acc, poItem) => {
+      const alreadyClosed = poItem.closedQuantity ?? 0;
+      const nextReceived = nextReceivedQuantities[poItem.purchaseItemId] ?? 0;
+      const remainingOpen = Math.max(poItem.quantity - nextReceived - alreadyClosed, 0);
+      acc[poItem.purchaseItemId] = alreadyClosed + (closeOutstandingBalance ? remainingOpen : 0);
+      return acc;
+    }, {} as Record<string, number>);
 
     const allFullyReceived = purchaseOrder.items.every(
       (poItem) => (nextReceivedQuantities[poItem.purchaseItemId] ?? 0) >= poItem.quantity,
     );
-    const someReceived = purchaseOrder.items.some(
-      (poItem) => (nextReceivedQuantities[poItem.purchaseItemId] ?? 0) > 0,
+    const allResolved = purchaseOrder.items.every(
+      (poItem) =>
+        (nextReceivedQuantities[poItem.purchaseItemId] ?? 0) +
+          (nextClosedQuantities[poItem.purchaseItemId] ?? 0) >=
+        poItem.quantity,
+    );
+    const someResolved = purchaseOrder.items.some(
+      (poItem) =>
+        (nextReceivedQuantities[poItem.purchaseItemId] ?? 0) +
+          (nextClosedQuantities[poItem.purchaseItemId] ?? 0) >
+        0,
+    );
+    const shortClosedNow = purchaseOrder.items.some(
+      (poItem) => (nextClosedQuantities[poItem.purchaseItemId] ?? 0) > (poItem.closedQuantity ?? 0),
     );
 
     let newPOStatus: PurchaseOrder['status'] = purchaseOrder.status;
     if (allFullyReceived) {
       newPOStatus = 'received';
-    } else if (someReceived) {
+    } else if (allResolved) {
+      newPOStatus = 'closed';
+    } else if (someResolved) {
       newPOStatus = 'partially-received';
     }
 
+    const updatedItems = purchaseOrder.items.map((poItem) => {
+      const grnItem = items.find((item) => item.purchaseItemId === poItem.purchaseItemId);
+      const receivedQuantity = nextReceivedQuantities[poItem.purchaseItemId] ?? 0;
+      const closedQuantity = nextClosedQuantities[poItem.purchaseItemId] ?? 0;
+      const ratePerUnit = grnItem && grnItem.ratePerUnit > 0 ? grnItem.ratePerUnit : poItem.ratePerUnit;
+      const committedQuantity = Math.max(poItem.quantity - closedQuantity, 0);
+
+      return {
+        ...poItem,
+        ratePerUnit,
+        amount: committedQuantity * ratePerUnit,
+        receivedQuantity,
+        closedQuantity,
+        pendingQuantity: Math.max(0, poItem.quantity - receivedQuantity - closedQuantity),
+      };
+    });
+    const subtotal = updatedItems.reduce((sum, item) => sum + item.amount, 0);
+    const totalAmount = subtotal + (purchaseOrder.taxAmount || 0);
+    const amountPaid = purchaseOrder.amountPaid || 0;
     const updatedPO: PurchaseOrder = {
       ...purchaseOrder,
       status: newPOStatus,
-      items: purchaseOrder.items.map((poItem) => {
-        const receivedQuantity = nextReceivedQuantities[poItem.purchaseItemId] ?? 0;
-        return {
-          ...poItem,
-          receivedQuantity,
-          pendingQuantity: Math.max(0, poItem.quantity - receivedQuantity),
-        };
-      }),
-      deliveredDate: allFullyReceived ? new Date() : purchaseOrder.deliveredDate,
-      receivedBy: someReceived ? userName : purchaseOrder.receivedBy,
+      items: updatedItems,
+      subtotal,
+      totalAmount,
+      amountPending: Math.max(totalAmount - amountPaid, 0),
+      deliveredDate: allResolved ? new Date() : purchaseOrder.deliveredDate,
+      receivedBy: someResolved ? userName : purchaseOrder.receivedBy,
       receivedQuantities: nextReceivedQuantities,
+      shortClosedAt: shortClosedNow ? new Date() : purchaseOrder.shortClosedAt,
+      shortClosedBy: shortClosedNow ? userName : purchaseOrder.shortClosedBy,
+      shortCloseReason:
+        shortClosedNow && qualityRemarks.trim()
+          ? qualityRemarks.trim()
+          : shortClosedNow
+            ? 'Balance short closed during GRN receipt'
+            : purchaseOrder.shortCloseReason,
       updatedAt: new Date(),
     };
 
@@ -585,6 +657,7 @@ export function GRNDialog({
               <span><strong className="text-slate-900">Pending Lines:</strong> {items.length}</span>
               <span><strong className="text-slate-900">PO Qty:</strong> {totalOrderedOnPO}</span>
               <span><strong className="text-slate-900">Previously Received:</strong> {totalPreviouslyReceived}</span>
+              <span><strong className="text-slate-900">Previously Closed:</strong> {totalPreviouslyClosed}</span>
               <span><strong className="text-slate-900">Receiving Now:</strong> {totalReceived}</span>
               <span><strong className="text-slate-900">Accepted:</strong> {totalAccepted}</span>
               <span><strong className="text-slate-900">Rejected:</strong> {totalRejected}</span>
@@ -634,6 +707,7 @@ export function GRNDialog({
                         <th className={`${tableHeadClass} text-right`}>Received</th>
                         <th className={`${tableHeadClass} text-right`}>Accepted</th>
                         <th className={`${tableHeadClass} text-right`}>Rejected</th>
+                        <th className={`${tableHeadClass} text-right`}>Rate</th>
                         <th className={tableHeadClass}>Destination</th>
                         <th className={`${tableHeadClass} text-right`}>Value</th>
                       </tr>
@@ -673,6 +747,16 @@ export function GRNDialog({
                             <span className={item.rejectedQuantity > 0 ? 'font-medium text-red-700' : 'text-slate-400'}>
                               {item.rejectedQuantity > 0 ? `${item.rejectedQuantity} ${item.unit}` : '-'}
                             </span>
+                          </td>
+                          <td className={`${tableCellClass} text-right`}>
+                            <input
+                              type="number"
+                              value={item.ratePerUnit}
+                              onChange={(event) => handleRateChange(index, parseFloat(event.target.value) || 0)}
+                              min="0"
+                              step="0.01"
+                              className="w-28 rounded border border-slate-300 px-3 py-1.5 text-right text-sm font-medium text-slate-700"
+                            />
                           </td>
                           <td className={tableCellClass}>
                             <select
@@ -734,6 +818,24 @@ export function GRNDialog({
                       </span>
                     </span>
                   </label>
+                  <label className="mt-3 flex items-start gap-3 rounded border border-slate-200 bg-white px-3 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={closeOutstandingBalance}
+                      onChange={(event) => setCloseOutstandingBalance(event.target.checked)}
+                      className="mt-1 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span>
+                      <span className="block font-medium text-slate-900">Close Remaining Balance On This PO</span>
+                      <span className="mt-1 block text-xs text-slate-600">
+                        Use this when the vendor will not deliver the balance. This PO will be treated as complete and you can raise a fresh PO later.
+                      </span>
+                      <span className="mt-1 block text-xs text-slate-500">
+                        Outstanding after this GRN: {projectedOutstandingAfterThisGRN} units
+                        {closeOutstandingBalance && projectedCloseQuantity > 0 ? ` | ${projectedCloseQuantity} units will be short closed` : ''}
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </section>
             </div>
@@ -756,6 +858,10 @@ export function GRNDialog({
                   <div className="flex items-center justify-between">
                     <span>Rejected Quantity</span>
                     <span className="font-medium text-red-700">{totalRejected}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Short Close Balance</span>
+                    <span className="font-medium text-slate-900">{projectedCloseQuantity}</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span>Accepted Lines</span>

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Sidebar } from './Sidebar';
 import { Booking, ServiceBooking } from '../calendar/types-v2';
@@ -32,6 +32,7 @@ import {
   normalizeStoreMaster,
   normalizeStoreStocks,
 } from '@/app/lib/storeMaster';
+import { syncBanquetRecipePricingFromPurchaseItems } from '@/app/lib/banquetRecipeRepricing';
 import { DEFAULT_UNIT_MASTERS } from '@/app/lib/unitConversion';
 import {
   DEFAULT_PROCUREMENT_LOOKUPS,
@@ -724,6 +725,44 @@ export function ERPSystem({
       return hasChanges ? nextItems : currentItems;
     });
   }, [setPurchaseItems, storeStocks]);
+
+  // Keep refs to the latest values so the repricing effect can always read current
+  // state without declaring the outputs (dishes/recipes/menuPackages) as dependencies.
+  // Declaring them as dependencies would cause an infinite re-run: the effect writes
+  // back repriced values → state changes → effect fires again → repeat.
+  const dishesRef = useRef(dishes);
+  dishesRef.current = dishes;
+  const recipesRef = useRef(recipes);
+  recipesRef.current = recipes;
+  const menuPackagesRef = useRef(menuPackages);
+  menuPackagesRef.current = menuPackages;
+  const userNameRef = useRef(userName);
+  userNameRef.current = userName;
+
+  useEffect(() => {
+    const repricedState = syncBanquetRecipePricingFromPurchaseItems({
+      recipes: recipesRef.current,
+      purchaseItems,
+      units: measurementUnits,
+      dishes: dishesRef.current,
+      menuPackages: menuPackagesRef.current,
+      userName: userNameRef.current,
+    });
+
+    if (!repricedState.changed) {
+      return;
+    }
+
+    setRecipes(repricedState.recipes);
+    setDishes(repricedState.dishes);
+    setMenuPackages(repricedState.menuPackages);
+  }, [
+    measurementUnits,
+    purchaseItems,
+    setDishes,
+    setMenuPackages,
+    setRecipes,
+  ]);
 
   // Finance Management states
   const [customerInvoices, setCustomerInvoices] = useState<CustomerInvoice[]>([]);

@@ -40,7 +40,7 @@ import {
 } from '../kitchen/banquet/productionFlow';
 import { GRNDialog } from './GRNDialog';
 
-type PurchaseOrderStatusFilter = 'all' | 'draft' | 'approved' | 'partially-received' | 'received' | 'cancelled';
+type PurchaseOrderStatusFilter = 'all' | 'draft' | 'approved' | 'partially-received' | 'received' | 'closed' | 'cancelled';
 type VendorFilter = 'all' | string;
 type PlanningMode = 'shortage' | 'production' | 'reorder';
 
@@ -159,6 +159,8 @@ interface PurchaseOrdersProps {
 interface PurchaseOrderRow extends PurchaseOrder {
   orderedQuantity: number;
   receivedQuantity: number;
+  closedQuantity: number;
+  completedQuantity: number;
   pendingQuantity: number;
   receiptPercentage: number;
   grnCount: number;
@@ -172,6 +174,7 @@ const getStatusBadge = (status: string) => {
     approved: 'bg-blue-100 text-blue-800',
     received: 'bg-emerald-100 text-emerald-700',
     'partially-received': 'bg-amber-100 text-amber-700',
+    closed: 'bg-slate-200 text-slate-700',
     cancelled: 'bg-red-100 text-red-700',
   };
 
@@ -182,6 +185,72 @@ const getStatusBadge = (status: string) => {
       {status.replace(/-/g, ' ')}
     </span>
   );
+};
+
+const isPostReceiptOrderStatus = (status: PurchaseOrder['status']) =>
+  status === 'received' || status === 'partially-received' || status === 'closed';
+
+const getClosedQuantity = (item: POItem) => item.closedQuantity ?? 0;
+const getReceivedQuantity = (purchaseOrder: PurchaseOrder, item: POItem) =>
+  item.receivedQuantity ?? purchaseOrder.receivedQuantities?.[item.purchaseItemId] ?? 0;
+const hasPostedLineActivity = (item: POItem) =>
+  (item.receivedQuantity ?? 0) > 0 || getClosedQuantity(item) > 0;
+const getCommittedQuantity = (item: POItem) => Math.max(item.quantity - getClosedQuantity(item), 0);
+const getPendingQuantity = (purchaseOrder: PurchaseOrder, item: POItem) =>
+  Math.max(item.quantity - getReceivedQuantity(purchaseOrder, item) - getClosedQuantity(item), 0);
+const getLineAmount = (item: POItem) => getCommittedQuantity(item) * item.ratePerUnit;
+
+const recalculateVendorBillStatus = (amountPaid: number, amountPending: number): VendorBill['status'] =>
+  amountPending === 0 ? 'paid' : amountPaid > 0 ? 'partially-paid' : 'pending';
+
+const recalculatePurchaseOrder = (purchaseOrder: PurchaseOrder, overrides?: Partial<PurchaseOrder>): PurchaseOrder => {
+  const nextOrder = {
+    ...purchaseOrder,
+    ...overrides,
+  };
+  const nextItems = (overrides?.items || purchaseOrder.items).map((item) => {
+    const amount = getLineAmount(item);
+    const pendingQuantity = getPendingQuantity(nextOrder, item);
+
+    return {
+      ...item,
+      amount,
+      pendingQuantity,
+    };
+  });
+  const subtotal = nextItems.reduce((sum, item) => sum + item.amount, 0);
+  const taxAmount = overrides?.taxAmount ?? nextOrder.taxAmount ?? 0;
+  const totalAmount = subtotal + taxAmount;
+  const amountPaid = overrides?.amountPaid ?? nextOrder.amountPaid ?? 0;
+
+  return {
+    ...nextOrder,
+    items: nextItems,
+    subtotal,
+    taxAmount,
+    totalAmount,
+    amountPaid,
+    amountPending: Math.max(totalAmount - amountPaid, 0),
+  };
+};
+
+const derivePostReceiptStatus = (purchaseOrder: PurchaseOrder): PurchaseOrder['status'] => {
+  const allPhysicallyReceived = purchaseOrder.items.every(
+    (item) => getReceivedQuantity(purchaseOrder, item) >= item.quantity,
+  );
+  if (allPhysicallyReceived) {
+    return 'received';
+  }
+
+  const allResolved = purchaseOrder.items.every((item) => getPendingQuantity(purchaseOrder, item) <= 0);
+  if (allResolved) {
+    return 'closed';
+  }
+
+  const hasPostedActivity = purchaseOrder.items.some(
+    (item) => getReceivedQuantity(purchaseOrder, item) > 0 || getClosedQuantity(item) > 0,
+  );
+  return hasPostedActivity ? 'partially-received' : 'approved';
 };
 
 const getActionMeta = (purchaseOrder: PurchaseOrderRow) => {
@@ -225,6 +294,14 @@ const getActionMeta = (purchaseOrder: PurchaseOrderRow) => {
     };
   }
 
+  if (purchaseOrder.status === 'closed') {
+    return {
+      label: 'Closed',
+      detail: 'Short delivery closed',
+      className: 'text-slate-700',
+    };
+  }
+
   return {
     label: 'Cancelled',
     detail: 'No further action',
@@ -237,6 +314,13 @@ const getEtaLabel = (purchaseOrder: PurchaseOrderRow) => {
     return {
       label: 'Completed',
       className: 'text-emerald-700',
+    };
+  }
+
+  if (purchaseOrder.status === 'closed') {
+    return {
+      label: 'Closed',
+      className: 'text-slate-700',
     };
   }
 
@@ -464,15 +548,20 @@ export function PurchaseOrders({
       .map((purchaseOrder) => {
         const orderedQuantity = purchaseOrder.items.reduce((sum, item) => sum + item.quantity, 0);
         const receivedQuantity = purchaseOrder.items.reduce(
-          (sum, item) => sum + (item.receivedQuantity ?? purchaseOrder.receivedQuantities?.[item.purchaseItemId] ?? 0),
+          (sum, item) => sum + getReceivedQuantity(purchaseOrder, item),
           0,
         );
+        const closedQuantity = purchaseOrder.items.reduce(
+          (sum, item) => sum + getClosedQuantity(item),
+          0,
+        );
+        const completedQuantity = receivedQuantity + closedQuantity;
         const expectedDate = new Date(purchaseOrder.expectedDeliveryDate);
         expectedDate.setHours(0, 0, 0, 0);
         const diffMs = expectedDate.getTime() - today.getTime();
         const daysToDelivery = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
         const overdueDays =
-          purchaseOrder.status === 'received' || purchaseOrder.status === 'cancelled' || daysToDelivery >= 0
+          purchaseOrder.status === 'received' || purchaseOrder.status === 'closed' || purchaseOrder.status === 'cancelled' || daysToDelivery >= 0
             ? 0
             : Math.abs(daysToDelivery);
         const relatedGrns = goodsReceipts.filter((grn) => grn.purchaseOrderId === purchaseOrder.id);
@@ -481,8 +570,10 @@ export function PurchaseOrders({
           ...purchaseOrder,
           orderedQuantity,
           receivedQuantity,
-          pendingQuantity: Math.max(orderedQuantity - receivedQuantity, 0),
-          receiptPercentage: orderedQuantity > 0 ? Math.round((receivedQuantity / orderedQuantity) * 100) : 0,
+          closedQuantity,
+          completedQuantity,
+          pendingQuantity: Math.max(orderedQuantity - completedQuantity, 0),
+          receiptPercentage: orderedQuantity > 0 ? Math.round((completedQuantity / orderedQuantity) * 100) : 0,
           grnCount: relatedGrns.length,
           overdueDays,
           daysToDelivery,
@@ -558,7 +649,8 @@ export function PurchaseOrders({
             (purchaseOrder) =>
               purchaseOrder.vendorId === vendor.id &&
               purchaseOrder.status !== 'cancelled' &&
-              purchaseOrder.status !== 'received',
+              purchaseOrder.status !== 'received' &&
+              purchaseOrder.status !== 'closed',
           );
 
           return {
@@ -592,6 +684,9 @@ export function PurchaseOrders({
     () => vendors.find((vendor) => vendor.id === selectedVendorId) || null,
     [selectedVendorId, vendors],
   );
+  const isEditingApprovedPO = editingDraftPO?.status === 'approved';
+  const isEditingPostReceiptPO = editingDraftPO ? isPostReceiptOrderStatus(editingDraftPO.status) : false;
+  const isEditingAmendmentPO = isEditingApprovedPO || isEditingPostReceiptPO;
 
   const vendorFormOptions = useMemo(() => {
     if (!selectedVendor || activeVendors.some((vendor) => vendor.id === selectedVendor.id)) {
@@ -1007,8 +1102,8 @@ export function PurchaseOrders({
   };
 
   const openEditDraftDialog = (purchaseOrder: PurchaseOrder) => {
-    if (purchaseOrder.status !== 'draft') {
-      toast.error('Only draft purchase orders can be edited');
+    if (purchaseOrder.status === 'cancelled') {
+      toast.error('Cancelled purchase orders cannot be amended');
       return;
     }
 
@@ -1020,8 +1115,8 @@ export function PurchaseOrders({
     setPoItems(
       purchaseOrder.items.map((item) => ({
         ...item,
-        amount: item.quantity * item.ratePerUnit,
-        pendingQuantity: item.pendingQuantity ?? item.quantity,
+        amount: getLineAmount(item),
+        pendingQuantity: getPendingQuantity(purchaseOrder, item),
       })),
     );
     setPoTaxAmount(purchaseOrder.taxAmount || 0);
@@ -1195,18 +1290,30 @@ export function PurchaseOrders({
           itemName: purchaseItem.itemName,
           unit: getPurchaseUnit(purchaseItem),
           ratePerUnit: defaultPurchaseCost,
-          amount: updatedItems[index].quantity * defaultPurchaseCost,
+          amount: getCommittedQuantity(updatedItems[index]) * defaultPurchaseCost,
         };
       }
     } else if (field === 'quantity' || field === 'ratePerUnit') {
-      const quantity = field === 'quantity' ? Number(value) : updatedItems[index].quantity;
+      const minimumQuantity =
+        isEditingPostReceiptPO
+          ? (updatedItems[index].receivedQuantity ?? 0) + getClosedQuantity(updatedItems[index])
+          : 0;
+      const quantity =
+        field === 'quantity'
+          ? Math.max(Number(value), minimumQuantity)
+          : updatedItems[index].quantity;
       const ratePerUnit = field === 'ratePerUnit' ? Number(value) : updatedItems[index].ratePerUnit;
 
       updatedItems[index] = {
         ...updatedItems[index],
-        [field]: Number(value),
-        amount: quantity * ratePerUnit,
-        pendingQuantity: quantity,
+        [field]: field === 'quantity' ? quantity : Number(value),
+        amount: Math.max(quantity - getClosedQuantity(updatedItems[index]), 0) * ratePerUnit,
+        pendingQuantity: Math.max(
+          quantity -
+            (updatedItems[index].receivedQuantity ?? 0) -
+            getClosedQuantity(updatedItems[index]),
+          0,
+        ),
       };
     }
 
@@ -1214,6 +1321,11 @@ export function PurchaseOrders({
   };
 
   const handleRemoveItem = (index: number) => {
+    if (isEditingPostReceiptPO && hasPostedLineActivity(poItems[index])) {
+      toast.error('Lines with receipt history cannot be removed');
+      return;
+    }
+
     setPoItems(poItems.filter((_, itemIndex) => itemIndex !== index));
   };
 
@@ -1455,6 +1567,19 @@ export function PurchaseOrders({
       return;
     }
 
+    if (
+      isEditingPostReceiptPO &&
+      poItems.some((item) => item.quantity < (item.receivedQuantity ?? 0) + getClosedQuantity(item))
+    ) {
+      toast.error('Amended quantity cannot be less than already received or short-closed quantity');
+      return;
+    }
+
+    if ((isEditingAmendmentPO || editingDraftPO?.status === 'approved') && poItems.some((item) => item.ratePerUnit <= 0)) {
+      toast.error('All corrected lines must have a rate greater than 0');
+      return;
+    }
+
     if (!expectedDeliveryDate) {
       toast.error('Please select an expected delivery date');
       return;
@@ -1476,7 +1601,8 @@ export function PurchaseOrders({
       return;
     }
 
-    const purchaseOrderData: PurchaseOrder = {
+    const preservedStatus: PurchaseOrder['status'] = editingDraftPO?.status || 'draft';
+    const recalculatedPurchaseOrder = recalculatePurchaseOrder({
       id: editingDraftPO?.id || `po-${Date.now()}`,
       poNumber: editingDraftPO?.poNumber || generatePONumber(),
       vendorId: selectedVendorId,
@@ -1484,33 +1610,207 @@ export function PurchaseOrders({
       orderDate: new Date(orderDate),
       expectedDeliveryDate: new Date(expectedDeliveryDate),
       paymentTerms: vendor.paymentTerms,
-      status: 'draft',
+      status: preservedStatus,
       sourceFlow: editingDraftPO?.sourceFlow || 'manual',
       sourceLabel: editingDraftPO?.sourceLabel || 'Manual PO',
       items: poItems.map((item) => ({
         ...item,
-        amount: item.quantity * item.ratePerUnit,
-        pendingQuantity: item.pendingQuantity ?? item.quantity,
+        amount: getLineAmount(item),
+        pendingQuantity:
+          item.pendingQuantity ??
+          Math.max(item.quantity - (item.receivedQuantity ?? 0) - getClosedQuantity(item), 0),
       })),
-      subtotal: draftTotals.subtotal,
-      taxAmount: draftTotals.taxAmount,
-      totalAmount: draftTotals.totalAmount,
       amountPaid: editingDraftPO?.amountPaid || 0,
-      amountPending: Math.max(draftTotals.totalAmount - (editingDraftPO?.amountPaid || 0), 0),
       remarks,
       createdBy: editingDraftPO?.createdBy || userName,
       createdAt: editingDraftPO?.createdAt || new Date(),
+      approvedBy: editingDraftPO?.approvedBy,
+      approvedAt: editingDraftPO?.approvedAt,
+      deliveredDate: editingDraftPO?.deliveredDate,
+      receivedBy: editingDraftPO?.receivedBy,
+      receivedQuantities: editingDraftPO?.receivedQuantities,
+      shortClosedAt: editingDraftPO?.shortClosedAt,
+      shortClosedBy: editingDraftPO?.shortClosedBy,
+      shortCloseReason: editingDraftPO?.shortCloseReason,
+      amendedAt: editingDraftPO ? new Date() : undefined,
+      amendedBy: editingDraftPO ? userName : undefined,
+      amendmentReason: editingDraftPO && isEditingAmendmentPO ? (remarks.trim() || 'Post-receipt PO correction') : editingDraftPO?.amendmentReason,
+      taxAmount: draftTotals.taxAmount,
       updatedAt: new Date(),
-    };
+    });
+    const purchaseOrderData = isEditingPostReceiptPO
+      ? {
+          ...recalculatedPurchaseOrder,
+          status: derivePostReceiptStatus(recalculatedPurchaseOrder),
+        }
+      : recalculatedPurchaseOrder;
 
     if (editingDraftPO) {
+      const creditDays =
+        vendor.paymentTerms.startsWith('credit-') ? Number(vendor.paymentTerms.split('-')[1] || '0') : 0;
+      const originalLineById = new Map(editingDraftPO.items.map((item) => [item.id, item]));
+      const originalItemToAmendedLine = new Map<string, POItem>();
+      purchaseOrderData.items.forEach((item) => {
+        const originalLine = originalLineById.get(item.id);
+        if (originalLine) {
+          originalItemToAmendedLine.set(originalLine.purchaseItemId, item);
+        }
+      });
+      const nextGoodsReceipts = isEditingPostReceiptPO
+        ? goodsReceipts.map((grn) => {
+            if (grn.purchaseOrderId !== editingDraftPO.id) {
+              return grn;
+            }
+
+            return {
+              ...grn,
+              vendorId: purchaseOrderData.vendorId,
+              vendorName: purchaseOrderData.vendorName,
+              items: grn.items.map((grnItem) => {
+                const amendedLine =
+                  originalItemToAmendedLine.get(grnItem.purchaseItemId) ||
+                  purchaseOrderData.items.find((item) => item.purchaseItemId === grnItem.purchaseItemId);
+                if (!amendedLine) {
+                  return grnItem;
+                }
+
+                return {
+                  ...grnItem,
+                  purchaseItemId: amendedLine.purchaseItemId,
+                  itemName: amendedLine.itemName,
+                  unit: amendedLine.unit,
+                  ratePerUnit: amendedLine.ratePerUnit,
+                  totalValue: grnItem.acceptedQuantity * amendedLine.ratePerUnit,
+                };
+              }),
+            };
+          })
+        : goodsReceipts;
+      const nextVendorBills = isEditingPostReceiptPO
+        ? vendorBills.map((bill) => {
+            if (bill.purchaseOrderId !== editingDraftPO.id) {
+              return bill;
+            }
+
+            const items = bill.items.map((billItem) => {
+              const amendedLine =
+                originalItemToAmendedLine.get(billItem.purchaseItemId || '') ||
+                purchaseOrderData.items.find((item) => item.purchaseItemId === billItem.purchaseItemId);
+              if (!amendedLine) {
+                return billItem;
+              }
+
+              return {
+                ...billItem,
+                purchaseItemId: amendedLine.purchaseItemId,
+                itemName: amendedLine.itemName,
+                unit: amendedLine.unit,
+                ratePerUnit: amendedLine.ratePerUnit,
+                amount: billItem.quantity * amendedLine.ratePerUnit,
+              };
+            });
+            const subtotal = items.reduce((sum, item) => sum + item.amount, 0);
+            const totalAmount = subtotal + (bill.taxAmount || 0);
+            const amountPending = Math.max(totalAmount - bill.amountPaid, 0);
+            const dueDate = new Date(bill.billDate);
+            if (creditDays > 0) {
+              dueDate.setDate(dueDate.getDate() + creditDays);
+            }
+
+            return {
+              ...bill,
+              vendorId: purchaseOrderData.vendorId,
+              vendorName: purchaseOrderData.vendorName,
+              poNumber: purchaseOrderData.poNumber,
+              items,
+              subtotal,
+              totalAmount,
+              amountPending,
+              dueDate,
+              status: recalculateVendorBillStatus(bill.amountPaid, amountPending),
+              updatedAt: new Date(),
+            };
+          })
+        : vendorBills;
+      const nextPurchaseItems = isEditingPostReceiptPO
+        ? purchaseItems.map((purchaseItem) => {
+            const amendedLine = purchaseOrderData.items.find((item) => item.purchaseItemId === purchaseItem.id);
+            if (!amendedLine || getReceivedQuantity(purchaseOrderData, amendedLine) <= 0 || amendedLine.ratePerUnit <= 0) {
+              return purchaseItem;
+            }
+
+            const conversionFactor = purchaseItem.conversionFactor || 1;
+            const baseUnitRate = amendedLine.ratePerUnit / conversionFactor;
+
+            return {
+              ...purchaseItem,
+              lastPurchaseRate: amendedLine.ratePerUnit,
+              lastCost: amendedLine.ratePerUnit,
+              averageCost: purchaseItem.averageCost && purchaseItem.averageCost > 0 ? purchaseItem.averageCost : baseUnitRate,
+              ratePerUnit: purchaseItem.ratePerUnit && purchaseItem.ratePerUnit > 0 ? purchaseItem.ratePerUnit : baseUnitRate,
+              lastPurchaseDate: new Date(),
+              updatedAt: new Date(),
+            };
+          })
+        : purchaseItems;
+      const nextVendors = isEditingPostReceiptPO
+        ? (() => {
+            const originalLinkedBills = vendorBills.filter((bill) => bill.purchaseOrderId === editingDraftPO.id);
+            const updatedLinkedBills = nextVendorBills.filter((bill) => bill.purchaseOrderId === editingDraftPO.id);
+            const originalOutstanding = originalLinkedBills.reduce((sum, bill) => sum + bill.amountPending, 0);
+            const originalPurchases = originalLinkedBills.reduce((sum, bill) => sum + bill.totalAmount, 0);
+            const updatedOutstanding = updatedLinkedBills.reduce((sum, bill) => sum + bill.amountPending, 0);
+            const updatedPurchases = updatedLinkedBills.reduce((sum, bill) => sum + bill.totalAmount, 0);
+
+            return vendors.map((entry) => {
+              const isOriginalVendor = entry.id === editingDraftPO.vendorId;
+              const isUpdatedVendor = entry.id === purchaseOrderData.vendorId;
+              if (!isOriginalVendor && !isUpdatedVendor) {
+                return entry;
+              }
+
+              let currentBalance = entry.currentBalance;
+              let totalPurchases = entry.totalPurchases;
+              let lastPurchaseDate = entry.lastPurchaseDate;
+
+              if (isOriginalVendor) {
+                currentBalance = Math.max(currentBalance - originalOutstanding, 0);
+                totalPurchases = Math.max(totalPurchases - originalPurchases, 0);
+              }
+
+              if (isUpdatedVendor) {
+                currentBalance += updatedOutstanding;
+                totalPurchases += updatedPurchases;
+                lastPurchaseDate = new Date();
+              }
+
+              return {
+                ...entry,
+                currentBalance,
+                totalPurchases,
+                lastPurchaseDate,
+                updatedAt: new Date(),
+              };
+            });
+          })()
+        : vendors;
       const orderExists = purchaseOrders.some((entry) => entry.id === editingDraftPO.id);
+      if (isEditingPostReceiptPO) {
+        onGoodsReceiptsChange(nextGoodsReceipts);
+        onVendorBillsChange(nextVendorBills);
+        onPurchaseItemsChange(nextPurchaseItems);
+        onVendorsChange(nextVendors);
+      }
       onPurchaseOrdersChange(
         orderExists
           ? purchaseOrders.map((entry) => (entry.id === editingDraftPO.id ? purchaseOrderData : entry))
           : [...purchaseOrders, purchaseOrderData],
       );
-      toast.success(`Draft PO ${purchaseOrderData.poNumber} updated`);
+      toast.success(
+        `${purchaseOrderData.poNumber} ${
+          isEditingPostReceiptPO ? 'amended' : purchaseOrderData.status === 'approved' ? 'corrected' : 'updated'
+        }`,
+      );
       closeDialog();
       return;
     }
@@ -1521,13 +1821,18 @@ export function PurchaseOrders({
   };
 
   const handleApprovePO = (purchaseOrder: PurchaseOrder) => {
-    const approvedPurchaseOrder: PurchaseOrder = {
+    if (purchaseOrder.items.some((item) => item.ratePerUnit <= 0)) {
+      toast.error('Enter a valid rate for every line before approval');
+      return;
+    }
+
+    const approvedPurchaseOrder: PurchaseOrder = recalculatePurchaseOrder({
       ...purchaseOrder,
       status: 'approved',
       approvedBy: userName,
       approvedAt: new Date(),
       updatedAt: new Date(),
-    };
+    });
 
     onPurchaseOrdersChange(
       purchaseOrders.map((entry) => (entry.id === purchaseOrder.id ? approvedPurchaseOrder : entry)),
@@ -1537,7 +1842,7 @@ export function PurchaseOrders({
   };
 
   const handleCancelPO = (purchaseOrder: PurchaseOrder) => {
-    if (purchaseOrder.status === 'received' || purchaseOrder.status === 'partially-received') {
+    if (purchaseOrder.status === 'received' || purchaseOrder.status === 'partially-received' || purchaseOrder.status === 'closed') {
       toast.error('Received purchase orders cannot be cancelled');
       return;
     }
@@ -1759,6 +2064,7 @@ export function PurchaseOrders({
             <option value="approved">Approved</option>
             <option value="partially-received">Partially Received</option>
             <option value="received">Received</option>
+            <option value="closed">Closed</option>
             <option value="cancelled">Cancelled</option>
           </select>
           <select
@@ -1877,7 +2183,9 @@ export function PurchaseOrders({
                           <td className={tableCellClass}>
                             <div className="text-slate-900">{purchaseOrder.receiptPercentage}% received</div>
                             <div className="text-xs text-slate-500">
-                              {purchaseOrder.receivedQuantity} / {purchaseOrder.orderedQuantity} units · {purchaseOrder.grnCount} GRN
+                              {purchaseOrder.receivedQuantity} / {purchaseOrder.orderedQuantity} units
+                              {purchaseOrder.closedQuantity > 0 ? ` | ${purchaseOrder.closedQuantity} closed` : ''}
+                              {` | ${purchaseOrder.grnCount} GRN`}
                             </div>
                           </td>
                           <td className={`${tableCellClass} text-right`}>
@@ -1889,13 +2197,22 @@ export function PurchaseOrders({
                           <td className={tableCellClass}>{getStatusBadge(purchaseOrder.status)}</td>
                           <td className={`${tableCellClass} text-right`}>
                             <div className="flex flex-wrap items-center justify-end gap-1.5">
-                              {purchaseOrder.status === 'draft' ? (
+                              {purchaseOrder.status === 'draft' || purchaseOrder.status === 'approved' ? (
                                 <button
                                   onClick={() => openEditDraftDialog(purchaseOrder)}
                                   className="inline-flex h-7 items-center gap-1 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
                                 >
                                   <Edit3 className="size-3.5" />
-                                  Edit
+                                  {purchaseOrder.status === 'approved' ? 'Correct' : 'Edit'}
+                                </button>
+                              ) : null}
+                              {isPostReceiptOrderStatus(purchaseOrder.status) ? (
+                                <button
+                                  onClick={() => openEditDraftDialog(purchaseOrder)}
+                                  className="inline-flex h-7 items-center gap-1 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                >
+                                  <Edit3 className="size-3.5" />
+                                  Amend
                                 </button>
                               ) : null}
                               {purchaseOrder.status === 'draft' ? (
@@ -2756,9 +3073,21 @@ export function PurchaseOrders({
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">
-                  {editingDraftPO ? `Edit Draft PO ${editingDraftPO.poNumber}` : 'Draft PO Review'}
+                  {editingDraftPO
+                    ? `${
+                        isEditingPostReceiptPO
+                          ? 'Amend Received PO'
+                          : editingDraftPO.status === 'approved'
+                            ? 'Correct Approved PO'
+                            : 'Edit Draft PO'
+                      } ${editingDraftPO.poNumber}`
+                    : 'Draft PO Review'}
                 </h2>
-                <p className="text-xs text-slate-500">Review and adjust draft POs before approval and GRN receiving.</p>
+                <p className="text-xs text-slate-500">
+                  {isEditingPostReceiptPO
+                    ? 'Correct commercial mistakes after GRN posting without reopening receipt history.'
+                    : 'Review and adjust draft or approved POs before GRN receiving.'}
+                </p>
               </div>
               <button onClick={closeDialog} className="rounded p-2 text-slate-500 hover:bg-slate-100">
                 <X className="size-5" />
@@ -2775,7 +3104,7 @@ export function PurchaseOrders({
                     <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-3">
                       <div className="md:col-span-3">
                         <div className="inline-flex h-8 items-center rounded border border-slate-300 bg-slate-50 px-3 text-xs font-medium text-slate-700">
-                          Draft Review Mode
+                          {isEditingPostReceiptPO ? 'Post Receipt Amendment Mode' : isEditingApprovedPO ? 'Approved PO Correction Mode' : 'Draft Review Mode'}
                         </div>
                       </div>
                       <div className="md:col-span-2">
@@ -2873,6 +3202,11 @@ export function PurchaseOrders({
                                     type="number"
                                     value={item.quantity}
                                     onChange={(event) => handleUpdateItem(index, 'quantity', Number(event.target.value))}
+                                    min={
+                                      isEditingPostReceiptPO
+                                        ? (item.receivedQuantity ?? 0) + getClosedQuantity(item)
+                                        : 0
+                                    }
                                     className="w-24 rounded border border-slate-300 px-3 py-2 text-right text-sm text-slate-700"
                                   />
                                 </td>
@@ -2889,12 +3223,16 @@ export function PurchaseOrders({
                                   {formatCurrencyPKR(item.amount)}
                                 </td>
                                 <td className={`${tableCellClass} text-right`}>
-                                  <button
-                                    onClick={() => handleRemoveItem(index)}
-                                    className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
-                                  >
-                                    Remove
-                                  </button>
+                                  {!isEditingPostReceiptPO || !hasPostedLineActivity(item) ? (
+                                    <button
+                                      onClick={() => handleRemoveItem(index)}
+                                      className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+                                    >
+                                      Remove
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs text-slate-400">Keep receipt line</span>
+                                  )}
                                 </td>
                               </tr>
                             ))}
@@ -2960,10 +3298,10 @@ export function PurchaseOrders({
                         <input
                           type="number"
                           min="0"
-                          value={poTaxAmount}
-                          onChange={(event) => setPoTaxAmount(Math.max(Number(event.target.value), 0))}
-                          className="h-8 w-28 rounded border border-slate-300 bg-white px-2 text-right text-sm font-medium text-slate-900"
-                        />
+                        value={poTaxAmount}
+                        onChange={(event) => setPoTaxAmount(Math.max(Number(event.target.value), 0))}
+                        className="h-8 w-28 rounded border border-slate-300 bg-white px-2 text-right text-sm font-medium text-slate-900"
+                      />
                       </div>
                       <div className="border-t border-blue-200 pt-3">
                         <div className="flex items-center justify-between">
@@ -2990,7 +3328,13 @@ export function PurchaseOrders({
                 onClick={handleSavePO}
                 className="rounded border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
               >
-                {editingDraftPO ? 'Update Draft PO' : 'Create Draft PO'}
+                {editingDraftPO
+                  ? isEditingPostReceiptPO
+                    ? 'Save Amendment'
+                    : editingDraftPO.status === 'approved'
+                      ? 'Save Correction'
+                      : 'Update Draft PO'
+                  : 'Create Draft PO'}
               </button>
             </div>
           </div>
@@ -3045,6 +3389,7 @@ export function PurchaseOrders({
                             <th className={tableHeadClass}>Item</th>
                             <th className={`${tableHeadClass} text-right`}>Ordered</th>
                             <th className={`${tableHeadClass} text-right`}>Received</th>
+                            <th className={`${tableHeadClass} text-right`}>Closed</th>
                             <th className={`${tableHeadClass} text-right`}>Rate</th>
                             <th className={`${tableHeadClass} text-right`}>Amount</th>
                           </tr>
@@ -3052,6 +3397,7 @@ export function PurchaseOrders({
                         <tbody>
                           {viewingPO.items.map((item) => {
                             const receivedQuantity = item.receivedQuantity ?? viewingPO.receivedQuantities?.[item.purchaseItemId] ?? 0;
+                            const closedQuantity = item.closedQuantity ?? 0;
                             return (
                               <tr key={item.id} className="border-t border-slate-200">
                                 <td className={tableCellClass}>
@@ -3060,6 +3406,7 @@ export function PurchaseOrders({
                                 </td>
                                 <td className={`${tableCellClass} text-right`}>{item.quantity}</td>
                                 <td className={`${tableCellClass} text-right`}>{receivedQuantity}</td>
+                                <td className={`${tableCellClass} text-right`}>{closedQuantity > 0 ? closedQuantity : '-'}</td>
                                 <td className={`${tableCellClass} text-right`}>{formatCurrencyPKR(item.ratePerUnit)}</td>
                                 <td className={`${tableCellClass} text-right font-medium text-slate-900`}>
                                   {formatCurrencyPKR(item.amount)}
@@ -3070,7 +3417,7 @@ export function PurchaseOrders({
                         </tbody>
                         <tfoot className="border-t-2 border-slate-200 bg-slate-50">
                           <tr>
-                            <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-slate-900">
+                            <td colSpan={5} className="px-3 py-2 text-right text-sm font-semibold text-slate-900">
                               Total
                             </td>
                             <td className="px-3 py-2 text-right text-sm font-semibold text-blue-700">
@@ -3141,6 +3488,18 @@ export function PurchaseOrders({
                         </span>
                       </div>
                       <div className="flex items-center justify-between">
+                        <span>Received Units</span>
+                        <span className="font-medium text-slate-900">
+                          {viewingOrderRow?.receivedQuantity ?? 0}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Closed Units</span>
+                        <span className="font-medium text-slate-900">
+                          {viewingOrderRow?.closedQuantity ?? 0}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
                         <span>Pending Units</span>
                         <span className="font-medium text-slate-900">
                           {viewingOrderRow?.pendingQuantity ?? 0}
@@ -3176,6 +3535,23 @@ export function PurchaseOrders({
                         <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Updated</div>
                         <div className="mt-1">{formatDatePK(viewingPO.updatedAt)}</div>
                       </div>
+                      {viewingPO.amendedAt ? (
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Amended</div>
+                          <div className="mt-1">{viewingPO.amendedBy || 'Unknown user'}</div>
+                          <div className="text-xs text-slate-500">{formatDatePK(viewingPO.amendedAt)}</div>
+                        </div>
+                      ) : null}
+                      {viewingPO.shortClosedAt ? (
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Short Closed</div>
+                          <div className="mt-1">{viewingPO.shortClosedBy || 'Unknown user'}</div>
+                          <div className="text-xs text-slate-500">
+                            {formatDatePK(viewingPO.shortClosedAt)}
+                            {viewingPO.shortCloseReason ? ` | ${viewingPO.shortCloseReason}` : ''}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </section>
                 </div>
@@ -3189,13 +3565,22 @@ export function PurchaseOrders({
               >
                 Close
               </button>
-              {viewingPO.status === 'draft' ? (
+              {viewingPO.status === 'draft' || viewingPO.status === 'approved' ? (
                 <button
                   onClick={() => openEditDraftDialog(viewingPO)}
                   className="inline-flex items-center gap-2 rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white"
                 >
                   <Edit3 className="size-4" />
-                  Edit Draft
+                  {viewingPO.status === 'approved' ? 'Correct PO' : 'Edit Draft'}
+                </button>
+              ) : null}
+              {isPostReceiptOrderStatus(viewingPO.status) ? (
+                <button
+                  onClick={() => openEditDraftDialog(viewingPO)}
+                  className="inline-flex items-center gap-2 rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white"
+                >
+                  <Edit3 className="size-4" />
+                  Amend PO
                 </button>
               ) : null}
               {viewingPO.status === 'draft' ? (

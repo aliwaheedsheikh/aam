@@ -1,3 +1,5 @@
+import { getClientInstanceId } from "./clientInstance";
+
 const PREFERRED_API_BASE_URL_STORAGE_KEY = "venueops-preferred-api-base-url";
 
 const normalizeApiBaseUrl = (value?: string | null) => value?.trim().replace(/\/+$/, "") || null;
@@ -114,9 +116,13 @@ export const fetchApi = async (path: string, init?: RequestInit) => {
 
   for (const candidate of candidates) {
     try {
+      const headers = new Headers(init?.headers ?? undefined);
+      headers.set("X-VenueOps-Client-Id", getClientInstanceId());
+
       const response = await fetch(`${candidate}${apiPath}`, {
         cache: "no-store",
         ...init,
+        headers,
       });
 
       if (shouldRetryWithNextBaseUrl(response, candidate, candidates.length)) {

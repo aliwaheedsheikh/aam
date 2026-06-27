@@ -74,6 +74,14 @@ export class AuthService {
     return this.toAuthenticatedUser(user);
   }
 
+  async authenticateAccessToken(token: string) {
+    const payload = await this.jwtService.verifyAsync<{ sub: string }>(token, {
+      secret: this.configService.get<string>("JWT_SECRET") ?? "venueops-dev-super-secret-key",
+    });
+
+    return this.getAuthenticatedUser(payload.sub);
+  }
+
   private toAuthenticatedUser(
     user: User & {
       username: string | null;

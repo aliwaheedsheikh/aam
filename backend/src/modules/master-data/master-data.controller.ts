@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Put, UseGuards } from "@nestjs/common";
 import { MODULE_KEYS } from "../auth/auth.constants";
 import { RequirePermissions } from "../auth/decorators/permissions.decorator";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
@@ -25,7 +25,11 @@ export class MasterDataController {
 
   @RequirePermissions(MODULE_KEYS.setup, "edit")
   @Put(":key")
-  upsert(@Param("key") key: string, @Body() upsertMasterDataDto: UpsertMasterDataDto) {
-    return this.masterDataService.upsert(key, upsertMasterDataDto.value);
+  upsert(
+    @Param("key") key: string,
+    @Body() upsertMasterDataDto: UpsertMasterDataDto,
+    @Headers("x-venueops-client-id") clientId?: string,
+  ) {
+    return this.masterDataService.upsert(key, upsertMasterDataDto.value, clientId);
   }
 }

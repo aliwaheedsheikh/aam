@@ -54,9 +54,16 @@ export class WorkflowProjectionService implements OnModuleInit {
     });
 
     for (const record of records) {
-      await this.prisma.$transaction(async (tx) => {
-        await this.project(tx, record.key, record.value);
-      });
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await this.project(tx, record.key, record.value);
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to project stored workflow state for ${record.key}`,
+          error instanceof Error ? error.stack : undefined,
+        );
+      }
     }
   }
 
@@ -1198,8 +1205,8 @@ export class WorkflowProjectionService implements OnModuleInit {
       recipeCost: this.toNullableNumber(entry.recipeCost),
       defaultVariantCost: this.toNullableNumber(entry.defaultVariantCost),
       defaultSellingPrice: this.toNullableNumber(entry.defaultSellingPrice),
-      foodCostPercentage: this.toNullableNumber(entry.foodCostPercentage),
-      grossMargin: this.toNullableNumber(entry.grossMargin),
+      foodCostPercentage: this.toNullableDecimal8(entry.foodCostPercentage),
+      grossMargin: this.toNullableDecimal8(entry.grossMargin),
       createdBy: this.toString(entry.createdBy),
       updatedBy: this.toString(entry.updatedBy),
       approvedBy: this.toString(entry.approvedBy),
@@ -1307,6 +1314,9 @@ export class WorkflowProjectionService implements OnModuleInit {
       targetYieldUnitExternalId: this.toString(recipe.targetYieldUnitId),
       expectedWastagePercentage: this.toNullableNumber(recipe.expectedWastagePercentage),
       expectedYieldPercentage: this.toNullableNumber(recipe.expectedYieldPercentage),
+      laborCostBehavior: this.toString(recipe.laborCostBehavior),
+      utilityCostBehavior: this.toString(recipe.utilityCostBehavior),
+      wastageCostBehavior: this.toString(recipe.wastageCostBehavior),
       totalIngredientCost: this.toNullableNumber(recipe.totalIngredientCost),
       wastageCost: this.toNullableNumber(recipe.wastageCost),
       laborCost: this.toNullableNumber(recipe.laborCost),
@@ -2079,6 +2089,15 @@ export class WorkflowProjectionService implements OnModuleInit {
     }
 
     return null;
+  }
+
+  private toNullableDecimal8(value: unknown) {
+    const parsed = this.toNullableNumber(value);
+    if (parsed === null) {
+      return null;
+    }
+
+    return Math.abs(parsed) < 10000 ? parsed : null;
   }
 
   private toNullableInteger(value: unknown) {

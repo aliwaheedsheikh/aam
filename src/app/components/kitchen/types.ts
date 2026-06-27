@@ -76,7 +76,7 @@ export interface ProcurementLookupState {
 
 export type PaymentTerms = 'cash' | 'credit-7' | 'credit-15' | 'credit-30' | 'credit-60';
 
-export type PurchaseOrderStatus = 'draft' | 'approved' | 'received' | 'partially-received' | 'cancelled';
+export type PurchaseOrderStatus = 'draft' | 'approved' | 'received' | 'partially-received' | 'closed' | 'cancelled';
 
 export type VendorSupplyScope =
   | 'approved_items_only'
@@ -331,15 +331,18 @@ export interface RecipeIngredient {
   totalCost: number; // quantity * costPerUnit
 }
 
-export type RecipeCostLineCategory = 'labor' | 'utility';
+export type RecipeCostLineCategory = 'labor' | 'utility' | 'packaging' | 'other';
+export type RecipeCostBehavior = 'fixed-per-batch' | 'variable-by-yield';
 
 export type RecipeCostLineBasis =
   | 'fixed'
+  | 'item-usage'
   | 'fixed-daig-capacity'
   | 'per-kg-yield'
   | 'per-kg-output'
   | 'per-kg-input'
   | 'per-batch'
+  | 'per-daig'
   | 'per-hour'
   | 'per-person'
   | 'per-head';
@@ -381,6 +384,9 @@ export interface Recipe {
   targetYieldUnitId?: MeasurementUnit;
   expectedWastagePercentage?: number;
   expectedYieldPercentage?: number;
+  laborCostBehavior?: RecipeCostBehavior;
+  utilityCostBehavior?: RecipeCostBehavior;
+  wastageCostBehavior?: RecipeCostBehavior;
   totalIngredientCost?: number;
   wastageCost?: number;
   laborCost?: number;
@@ -681,6 +687,12 @@ export interface PurchaseOrder {
   deliveredDate?: Date;
   receivedBy?: string;
   receivedQuantities?: Record<string, number>; // itemId -> quantity received
+  shortClosedAt?: Date;
+  shortClosedBy?: string;
+  shortCloseReason?: string;
+  amendedAt?: Date;
+  amendedBy?: string;
+  amendmentReason?: string;
   
   // Notes
   remarks?: string;
@@ -710,6 +722,7 @@ export interface PurchaseOrderItem {
   // Receiving
   receivedQuantity?: number;
   pendingQuantity?: number;
+  closedQuantity?: number;
 }
 
 // Goods Receipt Note (GRN)

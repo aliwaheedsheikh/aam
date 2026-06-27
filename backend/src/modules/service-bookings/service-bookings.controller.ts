@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, UseGuards } from "@nestjs/common";
 import { MODULE_KEYS } from "../auth/auth.constants";
 import { RequirePermissions } from "../auth/decorators/permissions.decorator";
 import { JwtAuthGuard } from "../auth/guards/jwt-auth.guard";
@@ -24,25 +24,35 @@ export class ServiceBookingsController {
 
   @RequirePermissions(MODULE_KEYS.reservations, "edit")
   @Put("frontend-sync")
-  syncFrontendBookings(@Body() body: { bookings: Array<Record<string, unknown>> }) {
-    return this.serviceBookingsService.syncFrontendBookings((body?.bookings ?? []) as never[]);
+  syncFrontendBookings(
+    @Body() body: { bookings: Array<Record<string, unknown>> },
+    @Headers("x-venueops-client-id") clientId?: string,
+  ) {
+    return this.serviceBookingsService.syncFrontendBookings((body?.bookings ?? []) as never[], clientId);
   }
 
   @RequirePermissions(MODULE_KEYS.reservations, "create")
   @Post("frontend")
-  createFrontendBooking(@Body() booking: Record<string, unknown>) {
-    return this.serviceBookingsService.createFrontendBooking(booking as never);
+  createFrontendBooking(
+    @Body() booking: Record<string, unknown>,
+    @Headers("x-venueops-client-id") clientId?: string,
+  ) {
+    return this.serviceBookingsService.createFrontendBooking(booking as never, clientId);
   }
 
   @RequirePermissions(MODULE_KEYS.reservations, "edit")
   @Patch("frontend/:id")
-  updateFrontendBooking(@Param("id") id: string, @Body() booking: Record<string, unknown>) {
-    return this.serviceBookingsService.updateFrontendBooking(id, booking as never);
+  updateFrontendBooking(
+    @Param("id") id: string,
+    @Body() booking: Record<string, unknown>,
+    @Headers("x-venueops-client-id") clientId?: string,
+  ) {
+    return this.serviceBookingsService.updateFrontendBooking(id, booking as never, clientId);
   }
 
   @RequirePermissions(MODULE_KEYS.reservations, "delete")
   @Delete("frontend/:id")
-  removeFrontendBooking(@Param("id") id: string) {
-    return this.serviceBookingsService.removeFrontendBooking(id);
+  removeFrontendBooking(@Param("id") id: string, @Headers("x-venueops-client-id") clientId?: string) {
+    return this.serviceBookingsService.removeFrontendBooking(id, clientId);
   }
 }

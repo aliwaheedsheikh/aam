@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { BookingSpaceAssignmentType, BookingStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
+import { RealtimeService } from "../realtime/realtime.service";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 import { UpdateBookingDto } from "./dto/update-booking.dto";
 
@@ -46,7 +47,10 @@ const getSpaceAssignmentKey = (assignment: FrontendBookingSpaceAssignment) =>
 
 @Injectable()
 export class BookingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtimeService: RealtimeService,
+  ) {}
 
   findAll() {
     return this.prisma.booking.findMany({
@@ -92,8 +96,8 @@ export class BookingsService {
     return this.mapFrontendBooking(booking);
   }
 
-  create(createBookingDto: CreateBookingDto) {
-    return this.prisma.booking.create({
+  async create(createBookingDto: CreateBookingDto, originClientId?: string) {
+    const booking = await this.prisma.booking.create({
       data: {
         ...createBookingDto,
         eventDate: new Date(createBookingDto.eventDate),
@@ -104,12 +108,19 @@ export class BookingsService {
         spaceAssignments: true,
       },
     });
+
+    this.realtimeService.notifyResourceChanged("bookings", "upsert", {
+      recordId: booking.id,
+      originClientId,
+    });
+
+    return booking;
   }
 
-  update(id: string, updateBookingDto: UpdateBookingDto) {
+  async update(id: string, updateBookingDto: UpdateBookingDto, originClientId?: string) {
     const { eventDate, ...rest } = updateBookingDto as UpdateBookingDto & { eventDate?: string };
 
-    return this.prisma.booking.update({
+    const booking = await this.prisma.booking.update({
       where: { id },
       data: {
         ...rest,
@@ -122,6 +133,13 @@ export class BookingsService {
         payments: true,
       },
     });
+
+    this.realtimeService.notifyResourceChanged("bookings", "upsert", {
+      recordId: id,
+      originClientId,
+    });
+
+    return booking;
   }
 
   async findAllForFrontend() {
@@ -144,15 +162,20 @@ export class BookingsService {
     return bookings.map((booking) => this.mapFrontendBooking(booking));
   }
 
-  async createFrontendBooking(booking: FrontendBookingPayload) {
+  async createFrontendBooking(booking: FrontendBookingPayload, originClientId?: string) {
     await this.prisma.$transaction(async (tx) => {
       await this.upsertFrontendBooking(tx, booking);
+    });
+
+    this.realtimeService.notifyResourceChanged("bookings", "upsert", {
+      recordId: booking.id,
+      originClientId,
     });
 
     return this.findOneForFrontend(booking.id);
   }
 
-  async updateFrontendBooking(externalId: string, booking: FrontendBookingPayload) {
+  async updateFrontendBooking(externalId: string, booking: FrontendBookingPayload, originClientId?: string) {
     await this.ensureFrontendBookingExists(externalId);
 
     await this.prisma.$transaction(async (tx) => {
@@ -162,10 +185,15 @@ export class BookingsService {
       });
     });
 
+    this.realtimeService.notifyResourceChanged("bookings", "upsert", {
+      recordId: externalId,
+      originClientId,
+    });
+
     return this.findOneForFrontend(externalId);
   }
 
-  async removeFrontendBooking(externalId: string) {
+  async removeFrontendBooking(externalId: string, originClientId?: string) {
     const deleted = await this.prisma.booking.deleteMany({
       where: {
         externalId,
@@ -176,13 +204,18 @@ export class BookingsService {
       throw new NotFoundException(`Booking ${externalId} was not found`);
     }
 
+    this.realtimeService.notifyResourceChanged("bookings", "delete", {
+      recordId: externalId,
+      originClientId,
+    });
+
     return {
       deleted: true,
       id: externalId,
     };
   }
 
-  async syncFrontendBookings(bookings: FrontendBookingPayload[]) {
+  async syncFrontendBookings(bookings: FrontendBookingPayload[], originClientId?: string) {
     const incomingExternalIds = bookings.map((booking) => booking.id);
 
     await this.prisma.$transaction(async (tx) => {
@@ -198,6 +231,10 @@ export class BookingsService {
           },
         },
       });
+    });
+
+    this.realtimeService.notifyResourceChanged("bookings", "bulk-sync", {
+      originClientId,
     });
 
     return this.findAllForFrontend();

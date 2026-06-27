@@ -6,6 +6,11 @@ const WORKFLOW_EVENT_NAME = "workflowStateUpdated";
 const WORKFLOW_KEY_PREFIX = "workflow:";
 const PENDING_WORKFLOW_SYNC_KEY = "workflow:pending-sync-keys";
 const WORKFLOW_SYNC_META_KEY = "workflow:sync-meta";
+const pendingWorkflowEventKeys = new Set<string>();
+let workflowEventFlushScheduled = false;
+const inFlightWorkflowSyncKeys = new Set<string>();
+const scheduledWorkflowSyncTimers = new Map<string, number>();
+const workflowSyncRetryDelays = new Map<string, number>();
 
 type WorkflowSyncMeta = {
   dirty?: boolean;
@@ -76,6 +81,32 @@ const reviveDates = <T>(value: T): T => {
 
 const emitWorkflowStateUpdated = (key: string) => {
   window.dispatchEvent(new CustomEvent(WORKFLOW_EVENT_NAME, { detail: { key } }));
+};
+
+const scheduleWorkflowStateUpdated = (key: string) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  pendingWorkflowEventKeys.add(key);
+  if (workflowEventFlushScheduled) {
+    return;
+  }
+
+  workflowEventFlushScheduled = true;
+  const flushWorkflowEvents = () => {
+    workflowEventFlushScheduled = false;
+    const keys = Array.from(pendingWorkflowEventKeys);
+    pendingWorkflowEventKeys.clear();
+    keys.forEach((eventKey) => emitWorkflowStateUpdated(eventKey));
+  };
+
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(flushWorkflowEvents);
+    return;
+  }
+
+  window.setTimeout(flushWorkflowEvents, 0);
 };
 
 const readWorkflowSyncMeta = () => {
@@ -167,6 +198,7 @@ const queueWorkflowStateSync = (key: string) => {
 
 const markWorkflowStateSynced = (key: string, remoteUpdatedAt?: string) => {
   writePendingWorkflowSyncKeys(readPendingWorkflowSyncKeys().filter((pendingKey) => pendingKey !== key));
+  workflowSyncRetryDelays.delete(key);
   updateWorkflowSyncMeta(key, (current) => ({
     ...current,
     dirty: false,
@@ -180,6 +212,43 @@ const markWorkflowStateDirty = (key: string) => {
     dirty: true,
     localUpdatedAt: new Date().toISOString(),
   }));
+};
+
+const getWorkflowStateSignature = (value: unknown) => {
+  try {
+    return JSON.stringify(value) ?? null;
+  } catch (error) {
+    console.error("Failed to serialize workflow state:", error);
+    return null;
+  }
+};
+
+const readLocalWorkflowStateSnapshot = (key: string) => {
+  if (typeof window === "undefined") {
+    return { signature: null, value: undefined as unknown };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return { signature: null, value: undefined as unknown };
+    }
+
+    const value = JSON.parse(raw);
+    return {
+      signature: getWorkflowStateSignature(value),
+      value,
+    };
+  } catch (error) {
+    console.error(`Failed to read local workflow state for ${key}:`, error);
+    return { signature: null, value: undefined as unknown };
+  }
+};
+
+const getNextWorkflowSyncRetryDelay = (key: string) => {
+  const currentDelay = workflowSyncRetryDelays.get(key) ?? 1000;
+  workflowSyncRetryDelays.set(key, Math.min(currentDelay * 2, 30000));
+  return currentDelay;
 };
 
 const isMergeableWorkflowItem = (value: unknown): value is MergeableWorkflowItem =>
@@ -259,6 +328,7 @@ const prepareWorkflowStateForSync = async (token: string, key: string, value: un
 };
 
 const putWorkflowState = async (token: string, key: string, value: unknown) => {
+  const requestSignature = getWorkflowStateSignature(value);
   const payloadValue = await prepareWorkflowStateForSync(token, key, value);
   const response = await fetchApi(`/app-state/${encodeURIComponent(key)}`, {
     method: "PUT",
@@ -274,17 +344,109 @@ const putWorkflowState = async (token: string, key: string, value: unknown) => {
   }
 
   const record = (await response.json()) as { updatedAt?: string; value?: unknown };
-  setLocalWorkflowStateFromRemote(key, record.value ?? payloadValue, record.updatedAt);
+  const localSnapshot = readLocalWorkflowStateSnapshot(key);
+
+  if (
+    requestSignature &&
+    localSnapshot.signature &&
+    localSnapshot.signature !== requestSignature
+  ) {
+    queueWorkflowStateSync(key);
+    markWorkflowStateDirty(key);
+    return;
+  }
+
+  const remoteValue = record.value ?? payloadValue;
+  const remoteSignature = getWorkflowStateSignature(remoteValue);
+  const payloadSignature = getWorkflowStateSignature(payloadValue);
+
+  if (
+    localSnapshot.signature &&
+    remoteSignature &&
+    localSnapshot.signature === remoteSignature
+  ) {
+    markWorkflowStateSynced(key, record.updatedAt);
+    return;
+  }
+
+  // If the server's response matches exactly what we submitted, the server
+  // merely echoed our own payload (no other client merged in new data).
+  // Write to localStorage silently — do NOT fire a state-update event, because
+  // that would re-trigger repricing effects which would dirty the key again.
+  const serverEchoedOurPayload =
+    payloadSignature !== null && payloadSignature === remoteSignature;
+
+  setLocalWorkflowStateFromRemote(key, remoteValue, record.updatedAt, serverEchoedOurPayload);
 };
 
-const setLocalWorkflowStateFromRemote = (key: string, value: unknown, remoteUpdatedAt?: string) => {
+const scheduleWorkflowStateSync = (token: string, key: string, delayMs = 0) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const existingTimer = scheduledWorkflowSyncTimers.get(key);
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer);
+  }
+
+  const timer = window.setTimeout(() => {
+    scheduledWorkflowSyncTimers.delete(key);
+
+    if (inFlightWorkflowSyncKeys.has(key)) {
+      scheduleWorkflowStateSync(token, key, 250);
+      return;
+    }
+
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      markWorkflowStateSynced(key);
+      return;
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch (error) {
+      console.error(`Failed to parse queued workflow state for ${key}:`, error);
+      return;
+    }
+
+    let syncSucceeded = false;
+    inFlightWorkflowSyncKeys.add(key);
+    void putWorkflowState(token, key, value)
+      .then(() => {
+        syncSucceeded = true;
+        workflowSyncRetryDelays.delete(key);
+      })
+      .catch((error) => {
+        console.error(`Failed to sync workflow state for ${key}:`, error);
+      })
+      .finally(() => {
+        inFlightWorkflowSyncKeys.delete(key);
+        if (getWorkflowSyncMeta(key).dirty) {
+          scheduleWorkflowStateSync(token, key, syncSucceeded ? 500 : getNextWorkflowSyncRetryDelay(key));
+        }
+      });
+  }, delayMs);
+
+  scheduledWorkflowSyncTimers.set(key, timer);
+};
+
+const setLocalWorkflowStateFromRemote = (
+  key: string,
+  value: unknown,
+  remoteUpdatedAt?: string,
+  silent = false,
+) => {
   if (typeof window === "undefined") {
     return;
   }
 
   window.localStorage.setItem(key, JSON.stringify(value));
   markWorkflowStateSynced(key, remoteUpdatedAt);
-  emitWorkflowStateUpdated(key);
+  if (!silent) {
+    scheduleWorkflowStateUpdated(key);
+  }
 };
 
 export const flushPendingWorkflowStateToBackend = async () => {
@@ -300,11 +462,7 @@ export const flushPendingWorkflowStateToBackend = async () => {
       continue;
     }
 
-    try {
-      await putWorkflowState(token, key, JSON.parse(raw));
-    } catch (error) {
-      console.error(`Failed to flush workflow state for ${key}:`, error);
-    }
+    scheduleWorkflowStateSync(token, key);
   }
 };
 
@@ -326,15 +484,6 @@ export const loadWorkflowState = <T>(key: string, defaultValue: T): T => {
   }
 };
 
-const getWorkflowStateSignature = (value: unknown) => {
-  try {
-    return JSON.stringify(value) ?? null;
-  } catch (error) {
-    console.error("Failed to serialize workflow state:", error);
-    return null;
-  }
-};
-
 export const saveWorkflowState = <T>(key: string, value: T) => {
   if (typeof window === "undefined") {
     return;
@@ -344,7 +493,7 @@ export const saveWorkflowState = <T>(key: string, value: T) => {
     window.localStorage.setItem(key, JSON.stringify(value));
     queueWorkflowStateSync(key);
     markWorkflowStateDirty(key);
-    emitWorkflowStateUpdated(key);
+    scheduleWorkflowStateUpdated(key);
   } catch (error) {
     console.error(`Failed to cache workflow state for ${key}:`, error);
     return;
@@ -355,9 +504,7 @@ export const saveWorkflowState = <T>(key: string, value: T) => {
     return;
   }
 
-  void putWorkflowState(token, key, value).catch((error) => {
-    console.error(`Failed to sync workflow state for ${key}:`, error);
-  });
+  scheduleWorkflowStateSync(token, key);
 };
 
 export const hydrateWorkflowStateFromBackend = async () => {
@@ -391,10 +538,6 @@ export const hydrateWorkflowStateFromBackend = async () => {
         ? new Date(localMeta.lastRemoteUpdatedAt).getTime()
         : null;
       const currentRemoteAt = remoteUpdatedAt ? new Date(remoteUpdatedAt).getTime() : null;
-      const localUpdatedAt = localMeta.localUpdatedAt
-        ? new Date(localMeta.localUpdatedAt).getTime()
-        : null;
-
       if (!localMeta.dirty) {
         if (localSignature !== remoteSignature) {
           setLocalWorkflowStateFromRemote(record.key, record.value, remoteUpdatedAt);
@@ -409,34 +552,22 @@ export const hydrateWorkflowStateFromBackend = async () => {
         continue;
       }
 
-      if (
-        currentRemoteAt !== null &&
-        localUpdatedAt !== null &&
-        currentRemoteAt > localUpdatedAt
-      ) {
-        setLocalWorkflowStateFromRemote(record.key, record.value, remoteUpdatedAt);
-        continue;
-      }
-
       if (lastKnownRemoteAt === null) {
-        // A just-saved workflow collection can be dirty before the first remote timestamp is known.
-        // Keep the local change authoritative when it is newer than the backend record, so live polling
-        // cannot briefly revert Banquet Kitchen masters, recipes, or packages to stale database JSON.
-        if (localUpdatedAt !== null && currentRemoteAt !== null && localUpdatedAt >= currentRemoteAt) {
-          dirtyKeysToPush.add(record.key);
-          continue;
-        }
-
-        setLocalWorkflowStateFromRemote(record.key, record.value, remoteUpdatedAt);
+        // A dirty workflow key has a local edit that has not been acknowledged by the backend yet.
+        // Do not trust raw client/server timestamps here because clock skew or overlapping refreshes
+        // can make an older remote snapshot look newer and repeatedly revert Banquet Recipe & Costing edits.
+        dirtyKeysToPush.add(record.key);
         continue;
       }
 
       if (
         currentRemoteAt !== null &&
-        currentRemoteAt > lastKnownRemoteAt &&
-        (localUpdatedAt === null || currentRemoteAt >= localUpdatedAt)
+        currentRemoteAt > lastKnownRemoteAt
       ) {
-        setLocalWorkflowStateFromRemote(record.key, record.value, remoteUpdatedAt);
+        // Another client may have updated the same workflow collection while this client was still dirty.
+        // Keep the local copy in place and let the next PUT merge the two collections item-by-item instead
+        // of replacing the current editor state with a full stale/foreign snapshot.
+        dirtyKeysToPush.add(record.key);
         continue;
       }
 
@@ -455,11 +586,7 @@ export const hydrateWorkflowStateFromBackend = async () => {
       }
 
       if (!remoteKeys.has(key) || dirtyKeysToPush.has(key)) {
-        try {
-          await putWorkflowState(token, key, JSON.parse(raw));
-        } catch (error) {
-          console.error(`Failed to sync workflow state for ${key}:`, error);
-        }
+        scheduleWorkflowStateSync(token, key);
       }
     }
   } catch (error) {

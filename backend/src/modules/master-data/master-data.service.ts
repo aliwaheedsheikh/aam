@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
+import { RealtimeService } from "../realtime/realtime.service";
 import { MasterDataProjectionService } from "./master-data-projection.service";
 
 @Injectable()
@@ -8,6 +9,7 @@ export class MasterDataService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly masterDataProjectionService: MasterDataProjectionService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   findAll() {
@@ -22,10 +24,10 @@ export class MasterDataService {
     });
   }
 
-  upsert(key: string, value: unknown) {
+  async upsert(key: string, value: unknown, originClientId?: string) {
     const jsonValue = value as Prisma.InputJsonValue;
 
-    return this.prisma.$transaction(async (tx) => {
+    const record = await this.prisma.$transaction(async (tx) => {
       const record = await tx.masterDataRecord.upsert({
         where: { key },
         update: { value: jsonValue },
@@ -36,5 +38,12 @@ export class MasterDataService {
 
       return record;
     });
+
+    this.realtimeService.notifyResourceChanged("master-data", "upsert", {
+      key,
+      originClientId,
+    });
+
+    return record;
   }
 }

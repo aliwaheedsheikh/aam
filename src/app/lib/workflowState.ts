@@ -34,6 +34,7 @@ export const WORKFLOW_STATE_KEYS = {
   banquetDishes: `${WORKFLOW_KEY_PREFIX}banquet-dishes`,
   purchaseItems: `${WORKFLOW_KEY_PREFIX}purchase-items`,
   banquetRecipes: `${WORKFLOW_KEY_PREFIX}banquet-recipes`,
+  banquetProductionCostMethods: `${WORKFLOW_KEY_PREFIX}banquet-production-cost-methods`,
   banquetMenuPackages: `${WORKFLOW_KEY_PREFIX}banquet-menu-packages`,
   banquetMenuPackageTypes: `${WORKFLOW_KEY_PREFIX}banquet-menu-package-types`,
   centralKitchenEstimates: `${WORKFLOW_KEY_PREFIX}central-kitchen-estimates`,

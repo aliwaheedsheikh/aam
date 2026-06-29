@@ -6,14 +6,26 @@ import {
   type MenuItemVariant,
   type MenuPackage,
   type MenuPackageDish,
+  type ProductionCostMethod,
   type PurchaseItem,
   type Recipe,
   type RecipeIngredient,
+  type RecipeCostLineCategory,
   type StoreLocation,
   type StoreStock,
   type UnitMaster,
 } from '../types';
+import {
+  resolveProductionCostMethodFromLine,
+  shouldProductionCostMethodShowReference,
+} from '../../../lib/productionCostMethods';
 import { convertUnitQuantity as convertQuantityByUnit } from '../../../lib/unitConversion';
+
+type RequirementUsageSource = {
+  kind: 'ingredient' | 'resale' | RecipeCostLineCategory;
+  label: string;
+  methodName?: string;
+};
 
 export type BookingMenuSelection = {
   serviceMode?: string;
@@ -46,6 +58,7 @@ export interface ProductionIngredientLine {
   issueQuantity: number;
   shortageQuantity: number;
   linkedDishes: string[];
+  usageSources: RequirementUsageSource[];
 }
 
 export interface BookingProductionPlan {
@@ -86,6 +99,7 @@ export interface ConsolidatedProductionRequirement {
   shortageQuantity: number;
   eventNames: string[];
   linkedDishes: string[];
+  usageSources: RequirementUsageSource[];
 }
 
 const storeNames: Record<string, string> = {
@@ -169,6 +183,62 @@ const getIssueSheetItemKey = (bookingId: string, purchaseItemId: string, sourceS
 
 const getRequirementKey = (purchaseItemId: string, sourceStore: StoreLocation) => `${purchaseItemId}::${sourceStore}`;
 
+const mergeUsageSources = (
+  currentSources: RequirementUsageSource[],
+  nextSources: RequirementUsageSource[],
+) => {
+  const sourceMap = new Map<string, RequirementUsageSource>();
+  [...currentSources, ...nextSources].forEach((source) => {
+    sourceMap.set(`${source.kind}::${source.methodName || ''}::${source.label}`, source);
+  });
+  return Array.from(sourceMap.values());
+};
+
+const getRequirementSourceLabel = (
+  kind: RequirementUsageSource['kind'],
+  methodName?: string,
+) => {
+  switch (kind) {
+    case 'ingredient':
+      return 'Ingredient';
+    case 'resale':
+      return 'Resale';
+    case 'labor':
+      return methodName ? `Labor: ${methodName}` : 'Labor';
+    case 'utility':
+      return methodName ? `Utilities: ${methodName}` : 'Utilities';
+    case 'packaging':
+      return methodName ? `Packaging: ${methodName}` : 'Packaging';
+    case 'other':
+      return methodName ? `Other: ${methodName}` : 'Other';
+    default:
+      return kind;
+  }
+};
+
+const resolveProductionCostReferenceId = (
+  referenceId: string | undefined,
+  ingredients: RecipeIngredient[],
+  purchaseItemsById: Map<string, PurchaseItem>,
+) => {
+  if (!referenceId) {
+    return undefined;
+  }
+
+  if (purchaseItemsById.has(referenceId)) {
+    return referenceId;
+  }
+
+  const referencedIngredient = ingredients.find(
+    (entry) =>
+      entry.id === referenceId ||
+      entry.itemId === referenceId ||
+      entry.purchaseItemId === referenceId,
+  );
+
+  return referencedIngredient?.itemId || referencedIngredient?.purchaseItemId || referenceId;
+};
+
 const getPreferredStoreStock = (purchaseItem: PurchaseItem, storeStocks: StoreStock[]) => {
   const itemStocks = storeStocks
     .filter((stock) => stock.purchaseItemId === purchaseItem.id)
@@ -248,6 +318,7 @@ const addIngredientRequirement = (
   requiredQuantity: number,
   linkedDishName: string,
   issueSheets: KitchenIssueSheet[],
+  usageSources: RequirementUsageSource[],
 ) => {
   const key = getRequirementKey(purchaseItem.id, stockRow.storeLocation);
   const issuedQuantity = issueSheets.reduce((sum, sheet) => {
@@ -274,6 +345,7 @@ const addIngredientRequirement = (
     if (!existing.linkedDishes.includes(linkedDishName)) {
       existing.linkedDishes.push(linkedDishName);
     }
+    existing.usageSources = mergeUsageSources(existing.usageSources, usageSources);
     return;
   }
 
@@ -289,6 +361,7 @@ const addIngredientRequirement = (
     issueQuantity: 0,
     shortageQuantity: 0,
     linkedDishes: [linkedDishName],
+    usageSources,
   });
 };
 
@@ -299,6 +372,7 @@ const addRecipeRequirements = (
   recipe: Recipe,
   variant: MenuItemVariant,
   guestCount: number,
+  productionCostMethods: ProductionCostMethod[],
   purchaseItemsById: Map<string, PurchaseItem>,
   storeStocks: StoreStock[],
   issueSheets: KitchenIssueSheet[],
@@ -361,6 +435,62 @@ const addRecipeRequirements = (
       requiredInIssueUnit,
       dish.dishName,
       issueSheets,
+      [{ kind: 'ingredient', label: getRequirementSourceLabel('ingredient') }],
+    );
+  });
+
+  (recipe.additionalCostLines || []).forEach((line) => {
+    const selectedMethod = resolveProductionCostMethodFromLine(line, productionCostMethods);
+    const consumesInventory = shouldProductionCostMethodShowReference(selectedMethod, line.calculationBasis, line.category);
+    if (!selectedMethod || !consumesInventory) {
+      return;
+    }
+
+    const resolvedReferenceId = resolveProductionCostReferenceId(line.ingredientReferenceId, recipe.ingredients || [], purchaseItemsById);
+    if (!resolvedReferenceId) {
+      blockingIssues.push(`${dish.dishName} ${selectedMethod.methodName} is missing a linked purchase item for stock accountability.`);
+      return;
+    }
+
+    const purchaseItem = purchaseItemsById.get(resolvedReferenceId);
+    if (!purchaseItem) {
+      blockingIssues.push(`${dish.dishName} ${selectedMethod.methodName} links to a missing purchase item.`);
+      return;
+    }
+
+    const stockRow = getPreferredStoreStock(purchaseItem, storeStocks);
+    const rowQuantity = typeof line.quantity === 'number' && line.quantity > 0 ? line.quantity : 1;
+    const requiredQuantity = rowQuantity * batchMultiplier;
+    const sourceUnit =
+      line.unit ||
+      purchaseItem.purchaseUnitId ||
+      purchaseItem.purchaseUnit ||
+      purchaseItem.issueUnit;
+    const requiredInIssueUnit =
+      sourceUnit === purchaseItem.issueUnit
+        ? requiredQuantity
+        : convertUnitQuantity(requiredQuantity, sourceUnit, purchaseItem.issueUnit, units);
+
+    if (requiredInIssueUnit === null) {
+      blockingIssues.push(
+        `${dish.dishName} ${selectedMethod.methodName} cannot be converted from ${sourceUnit} to ${purchaseItem.issueUnit}.`,
+      );
+      return;
+    }
+
+    addIngredientRequirement(
+      requirementMap,
+      bookingId,
+      purchaseItem,
+      stockRow,
+      requiredInIssueUnit,
+      dish.dishName,
+      issueSheets,
+      [{
+        kind: line.category,
+        label: getRequirementSourceLabel(line.category, selectedMethod.methodName),
+        methodName: selectedMethod.methodName,
+      }],
     );
   });
 };
@@ -414,6 +544,7 @@ const addResaleRequirements = (
       requiredInIssueUnit,
       dish.dishName,
       issueSheets,
+      [{ kind: 'resale', label: getRequirementSourceLabel('resale') }],
     );
   });
 };
@@ -424,6 +555,7 @@ export const buildBanquetProductionPlan = ({
   recipes,
   menuPackages,
   purchaseItems,
+  productionCostMethods = [],
   storeStocks,
   issueSheets,
   units,
@@ -433,6 +565,7 @@ export const buildBanquetProductionPlan = ({
   recipes: Recipe[];
   menuPackages: MenuPackage[];
   purchaseItems: PurchaseItem[];
+  productionCostMethods?: ProductionCostMethod[];
   storeStocks: StoreStock[];
   issueSheets: KitchenIssueSheet[];
   units?: UnitMaster[];
@@ -510,17 +643,18 @@ export const buildBanquetProductionPlan = ({
         return;
       }
 
-      addRecipeRequirements(
-        booking.id,
-        dish,
-        packageDish,
-        recipe,
-        variant,
-        guestCount,
-        purchaseItemsById,
-        storeStocks,
-        relevantIssueSheets,
-        requirementMap,
+        addRecipeRequirements(
+          booking.id,
+          dish,
+          packageDish,
+          recipe,
+          variant,
+          guestCount,
+          productionCostMethods,
+          purchaseItemsById,
+          storeStocks,
+          relevantIssueSheets,
+          requirementMap,
         blockingIssues,
         units,
       );
@@ -599,6 +733,7 @@ export const buildBanquetProductionPlans = ({
   recipes,
   menuPackages,
   purchaseItems,
+  productionCostMethods = [],
   storeStocks,
   issueSheets,
   units,
@@ -609,6 +744,7 @@ export const buildBanquetProductionPlans = ({
   recipes: Recipe[];
   menuPackages: MenuPackage[];
   purchaseItems: PurchaseItem[];
+  productionCostMethods?: ProductionCostMethod[];
   storeStocks: StoreStock[];
   issueSheets: KitchenIssueSheet[];
   units?: UnitMaster[];
@@ -625,6 +761,7 @@ export const buildBanquetProductionPlans = ({
         recipes,
         menuPackages,
         purchaseItems,
+        productionCostMethods,
         storeStocks,
         issueSheets,
         units,
@@ -661,6 +798,7 @@ export const buildConsolidatedBanquetRequirements = (
             existing.linkedDishes.push(dishName);
           }
         });
+        existing.usageSources = mergeUsageSources(existing.usageSources, lineItem.usageSources);
         existing.availableQuantity = availableQuantity;
         return;
       }
@@ -677,6 +815,7 @@ export const buildConsolidatedBanquetRequirements = (
         shortageQuantity: 0,
         eventNames: [plan.customerName],
         linkedDishes: [...lineItem.linkedDishes],
+        usageSources: [...lineItem.usageSources],
       });
     });
   });

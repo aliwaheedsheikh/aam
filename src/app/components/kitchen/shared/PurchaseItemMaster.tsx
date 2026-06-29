@@ -21,7 +21,14 @@ import { toast } from 'sonner';
 import { formatCurrencyPKR, formatDatePK } from '../../../lib/locale';
 import { createProcurementLookupValue, getActiveLookupValues, getLookupName } from '../../../lib/procurementLookups';
 import { buildAssignableStoreOptions, getStoreDisplayName } from '../../../lib/storeMaster';
-import { convertUnitQuantity, ensureSelectedUnitOption, formatUnitOptionLabel, getUnitByCode, getUnitsForUsage } from '../../../lib/unitConversion';
+import {
+  convertUnitQuantity,
+  ensureSelectedUnitOption,
+  formatUnitOptionLabel,
+  getUnitByCode,
+  getUnitsForUsage,
+  normalizeUnitCode,
+} from '../../../lib/unitConversion';
 import { getLegacySupplyCategoryIdForCategory } from '../../../lib/vendorCategorySupport';
 import {
   CostingMethod,
@@ -86,6 +93,8 @@ interface BatchEntryDefaults {
   defaultPurchaseCost: number;
   leadTimeDays: number;
   minimumOrderQuantity: number;
+  packageContentQty: number;
+  packageContentUnit: MeasurementUnit;
   preferredSupplierId: string;
   purchaseUnit: MeasurementUnit;
   reorderLevel: number;
@@ -109,6 +118,8 @@ interface PurchaseItemEditorSnapshot {
   purchaseUnit: MeasurementUnit;
   baseUnit: MeasurementUnit;
   conversionFactor: number;
+  packageContentQty: number;
+  packageContentUnit: MeasurementUnit;
   reorderLevel: number;
   minimumStockLevel: number;
   maximumStockLevel: number;
@@ -328,6 +339,75 @@ const isTracked = (item: PurchaseItem) => item.trackInventory !== false;
 const isRecipeIngredientEnabled = (item?: PurchaseItem | null) => item?.useInRecipeIngredients !== false;
 const isRecipeOutputEnabled = (item?: PurchaseItem | null) =>
   item?.useAsRecipeOutput ?? (item ? recipeOutputInventoryTypes.has(getInventoryType(item)) : false);
+
+const packagePurchaseUnitCodes = new Set(['packet', 'bottle', 'bunch', 'tray', 'plate']);
+
+const getNormalizedMeasurementUnit = (value?: MeasurementUnit | string) => normalizeUnitCode(value || '') as MeasurementUnit;
+
+const isPackagePurchaseUnit = (value?: MeasurementUnit | string) =>
+  packagePurchaseUnitCodes.has(getNormalizedMeasurementUnit(value));
+
+const getDefaultPackageContentForPurchaseUnit = (purchaseUnit?: MeasurementUnit | string) => {
+  const normalizedPurchaseUnit = getNormalizedMeasurementUnit(purchaseUnit);
+
+  switch (normalizedPurchaseUnit) {
+    case 'dozen':
+      return { packageContentQty: 12, packageContentUnit: 'pcs' as MeasurementUnit };
+    case 'no':
+      return { packageContentQty: 1, packageContentUnit: 'pcs' as MeasurementUnit };
+    case 'pcs':
+    case 'kg':
+    case 'gm':
+    case 'liter':
+    case 'ml':
+      return { packageContentQty: 1, packageContentUnit: normalizedPurchaseUnit };
+    default:
+      return { packageContentQty: 1, packageContentUnit: 'pcs' as MeasurementUnit };
+  }
+};
+
+const derivePurchaseCostSetup = (
+  purchaseUnit: MeasurementUnit | string,
+  packageContentQty: number,
+  packageContentUnit: MeasurementUnit | string,
+) => {
+  const normalizedPurchaseUnit = getNormalizedMeasurementUnit(purchaseUnit);
+  const normalizedPackageContentUnit = getNormalizedMeasurementUnit(packageContentUnit);
+
+  if (normalizedPurchaseUnit === 'dozen') {
+    return {
+      purchaseUnit: normalizedPurchaseUnit,
+      baseUnit: 'pcs' as MeasurementUnit,
+      conversionFactor: 12,
+      requiresPackageContent: false,
+    };
+  }
+
+  if (normalizedPurchaseUnit === 'no') {
+    return {
+      purchaseUnit: normalizedPurchaseUnit,
+      baseUnit: 'pcs' as MeasurementUnit,
+      conversionFactor: 1,
+      requiresPackageContent: false,
+    };
+  }
+
+  if (isPackagePurchaseUnit(normalizedPurchaseUnit)) {
+    return {
+      purchaseUnit: normalizedPurchaseUnit,
+      baseUnit: normalizedPackageContentUnit,
+      conversionFactor: Number(packageContentQty) || 0,
+      requiresPackageContent: true,
+    };
+  }
+
+  return {
+    purchaseUnit: normalizedPurchaseUnit,
+    baseUnit: normalizedPurchaseUnit,
+    conversionFactor: 1,
+    requiresPackageContent: false,
+  };
+};
 
 const getItemAssignedStoreIds = (item: PurchaseItem): StoreLocation[] => {
   if (Array.isArray(item.assignedKitchenStoreIds) && item.assignedKitchenStoreIds.length > 0) {
@@ -645,6 +725,8 @@ export function PurchaseItemMaster({
   const [formBaseUnit, setFormBaseUnit] = useState<MeasurementUnit>('gm');
   const [formPurchaseUnit, setFormPurchaseUnit] = useState<MeasurementUnit>('kg');
   const [formConversionFactor, setFormConversionFactor] = useState(1000);
+  const [formPackageContentQty, setFormPackageContentQty] = useState(1);
+  const [formPackageContentUnit, setFormPackageContentUnit] = useState<MeasurementUnit>('gm');
   const [formReorderLevel, setFormReorderLevel] = useState(0);
   const [formMinimumStockLevel, setFormMinimumStockLevel] = useState(0);
   const [formMaximumStockLevel, setFormMaximumStockLevel] = useState(0);
@@ -708,6 +790,10 @@ export function PurchaseItemMaster({
   }, [categoryFilter, procurementLookups.purchaseSubCategories]);
   const purchaseUnitOptions = useMemo(() => getUnitsForUsage('purchase', units), [units]);
   const baseUnitOptions = useMemo(() => getUnitsForUsage('issue', units), [units]);
+  const packageContentUnitOptions = useMemo(
+    () => baseUnitOptions.filter((unit) => unit.family !== 'package' && unit.family !== 'service'),
+    [baseUnitOptions],
+  );
   const activeVendors = useMemo(
     () => vendors.filter((vendor) => vendor.status === 'active').sort((left, right) => left.vendorName.localeCompare(right.vendorName)),
     [vendors],
@@ -734,6 +820,7 @@ export function PurchaseItemMaster({
 
   const fallbackPurchaseUnit = purchaseUnitOptions[0]?.code || 'kg';
   const fallbackBaseUnit = baseUnitOptions[0]?.code || 'gm';
+  const fallbackPackageContentUnit = packageContentUnitOptions[0]?.code || 'gm';
   const fallbackPurchaseCategoryId = itemCategoryOptions[0]?.value || 'food-ingredients';
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const quantityFormatter = useMemo(
@@ -766,7 +853,7 @@ export function PurchaseItemMaster({
 
   const getCategorySuggestedSetup = (categoryId: string): Pick<
     BatchEntryDefaults,
-    'assignedStoreIds' | 'baseUnit' | 'conversionFactor' | 'purchaseUnit'
+    'assignedStoreIds' | 'baseUnit' | 'conversionFactor' | 'packageContentQty' | 'packageContentUnit' | 'purchaseUnit'
   > => {
     const categoryLabel = getPurchaseCategoryLabel(categoryId).toLowerCase();
     const packagingCategory =
@@ -791,6 +878,8 @@ export function PurchaseItemMaster({
         purchaseUnit: 'pcs',
         baseUnit: 'pcs',
         conversionFactor: 1,
+        packageContentQty: 1,
+        packageContentUnit: 'pcs',
         assignedStoreIds: packagingStoreId ? [packagingStoreId] : [],
       };
     }
@@ -801,9 +890,11 @@ export function PurchaseItemMaster({
         findSuggestedStoreId(['food store', 'main store']) ||
         activeKitchenStoreOptions[0]?.id;
       return {
-        purchaseUnit: 'ltr',
-        baseUnit: 'ml',
-        conversionFactor: 1000,
+        purchaseUnit: 'liter',
+        baseUnit: 'liter',
+        conversionFactor: 1,
+        packageContentQty: 1,
+        packageContentUnit: 'ml',
         assignedStoreIds: beverageStoreId ? [beverageStoreId] : [],
       };
     }
@@ -813,8 +904,10 @@ export function PurchaseItemMaster({
       activeKitchenStoreOptions[0]?.id;
     return {
       purchaseUnit: 'kg',
-      baseUnit: 'gm',
-      conversionFactor: 1000,
+      baseUnit: 'kg',
+      conversionFactor: 1,
+      packageContentQty: 1,
+      packageContentUnit: 'gm',
       assignedStoreIds: foodStoreId ? [foodStoreId] : [],
     };
   };
@@ -1388,7 +1481,38 @@ export function PurchaseItemMaster({
   );
 
   const resolvedPurchaseUnitOptions = ensureSelectedUnitOption(purchaseUnitOptions, formPurchaseUnit);
-  const resolvedBaseUnitOptions = ensureSelectedUnitOption(baseUnitOptions, formBaseUnit);
+  const resolvedPackageContentUnitOptions = ensureSelectedUnitOption(packageContentUnitOptions, formPackageContentUnit);
+  const derivedPurchaseCostSetup = derivePurchaseCostSetup(
+    formPurchaseUnit,
+    formPackageContentQty,
+    formPackageContentUnit,
+  );
+  const packageContentRequired = derivedPurchaseCostSetup.requiresPackageContent;
+  const normalizedFormPurchaseUnit = getNormalizedMeasurementUnit(formPurchaseUnit);
+  const normalizedFormBaseUnit = getNormalizedMeasurementUnit(formBaseUnit);
+  const normalizedEditingPurchaseUnit = editingItem ? getNormalizedMeasurementUnit(getPurchaseUnit(editingItem)) : '';
+  const legacyDirectCostBasisActive = Boolean(
+    editingItem &&
+      normalizedEditingPurchaseUnit === normalizedFormPurchaseUnit &&
+      !packageContentRequired &&
+      normalizedFormPurchaseUnit &&
+      normalizedFormBaseUnit &&
+      normalizedFormPurchaseUnit !== normalizedFormBaseUnit &&
+      formConversionFactor > 0,
+  );
+  const effectivePurchaseCostSetup = legacyDirectCostBasisActive
+    ? {
+        purchaseUnit: normalizedFormPurchaseUnit,
+        baseUnit: normalizedFormBaseUnit,
+        conversionFactor: formConversionFactor,
+        requiresPackageContent: false,
+      }
+    : derivedPurchaseCostSetup;
+  const autoCalculatedBaseCost =
+    formDefaultPurchaseCost > 0 && effectivePurchaseCostSetup.conversionFactor > 0
+      ? formDefaultPurchaseCost / effectivePurchaseCostSetup.conversionFactor
+      : 0;
+  const autoCalculatedBaseCostUnit = effectivePurchaseCostSetup.baseUnit || formBaseUnit || '-';
   const formSubCategoryOptions = useMemo(() => {
     const lookupOptions = getLookupOptions(subCategoryLookupValues);
     const legacyOptions = legacySubCategoryOptionsByCategory[formCategoryId] || [];
@@ -1427,6 +1551,8 @@ export function PurchaseItemMaster({
         purchaseUnit: formPurchaseUnit,
         baseUnit: formBaseUnit,
         conversionFactor: formConversionFactor,
+        packageContentQty: formPackageContentQty,
+        packageContentUnit: formPackageContentUnit,
         reorderLevel: formReorderLevel,
         minimumStockLevel: formMinimumStockLevel,
         maximumStockLevel: formMaximumStockLevel,
@@ -1468,6 +1594,8 @@ export function PurchaseItemMaster({
       formMaximumStockLevel,
       formMinimumOrderQuantity,
       formMinimumStockLevel,
+      formPackageContentQty,
+      formPackageContentUnit,
       formPreferredSupplierId,
       formPurchaseUnit,
       formReorderLevel,
@@ -1479,6 +1607,51 @@ export function PurchaseItemMaster({
       formUseInRecipeIngredients,
     ],
   );
+
+  useEffect(() => {
+    const normalizedPurchaseUnit = getNormalizedMeasurementUnit(formPurchaseUnit);
+    const suggestedSetup = getCategorySuggestedSetup(formCategoryId);
+
+    if (packageContentRequired) {
+      const fallbackContentUnit = getNormalizedMeasurementUnit(
+        formPackageContentUnit || suggestedSetup.packageContentUnit || fallbackPackageContentUnit,
+      );
+      if (!formPackageContentUnit || isPackagePurchaseUnit(formPackageContentUnit)) {
+        if (fallbackContentUnit !== formPackageContentUnit) {
+          setFormPackageContentUnit(fallbackContentUnit);
+        }
+      }
+    } else {
+      const defaultPackageContent = getDefaultPackageContentForPurchaseUnit(normalizedPurchaseUnit);
+      if (formPackageContentQty !== defaultPackageContent.packageContentQty) {
+        setFormPackageContentQty(defaultPackageContent.packageContentQty);
+      }
+      if (formPackageContentUnit !== defaultPackageContent.packageContentUnit) {
+        setFormPackageContentUnit(defaultPackageContent.packageContentUnit);
+      }
+    }
+
+    if (!legacyDirectCostBasisActive && formBaseUnit !== derivedPurchaseCostSetup.baseUnit && derivedPurchaseCostSetup.baseUnit) {
+      setFormBaseUnit(derivedPurchaseCostSetup.baseUnit);
+    }
+
+    if (!legacyDirectCostBasisActive && formConversionFactor !== derivedPurchaseCostSetup.conversionFactor) {
+      setFormConversionFactor(derivedPurchaseCostSetup.conversionFactor);
+    }
+  }, [
+    derivedPurchaseCostSetup.baseUnit,
+    derivedPurchaseCostSetup.conversionFactor,
+    fallbackPackageContentUnit,
+    formBaseUnit,
+    formCategoryId,
+    formConversionFactor,
+    formPackageContentQty,
+    formPackageContentUnit,
+    formPurchaseUnit,
+    legacyDirectCostBasisActive,
+    packageContentRequired,
+  ]);
+
   useEffect(() => {
     if (!dialogOpen || !editingItem) {
       return;
@@ -1515,22 +1688,24 @@ export function PurchaseItemMaster({
   const currentStockPreview = editingItem ? editingDerivedStock : 0;
   const reservedStockPreview = 0;
   const availableStockPreview = Math.max(0, currentStockPreview - reservedStockPreview);
-  const currentValuationRate =
-    editingItem?.ratePerUnit ?? editingItem?.averageCost ?? editingItem?.lastPurchaseRate ?? formDefaultPurchaseCost ?? 0;
   const assignedStoreSummary = formatStoreSummary(stores, formAssignedStoreIds);
   const preferredVendorName =
     activeVendors.find((vendor) => vendor.id === formPreferredSupplierId)?.vendorName || 'Not selected';
-  const conversionFormula = `1 ${formPurchaseUnit || '-'} = ${formConversionFactor || 0} ${formBaseUnit || '-'}`;
+  const conversionFormula = `1 ${effectivePurchaseCostSetup.purchaseUnit || '-'} = ${effectivePurchaseCostSetup.conversionFactor || 0} ${effectivePurchaseCostSetup.baseUnit || '-'}`;
   const generalSummary = `${getPurchaseCategoryLabel(formCategoryId)} / ${getResolvedSubCategoryLabel(formCategoryId, formSubCategoryId)}`;
   const inventorySummary = `${getInventoryTypeLabel(formInventoryType)}, ${formTrackInventory ? 'tracked' : 'not tracked'}, ${getCostingMethodLabel(formCostingMethod)}, recipes: ${formUseInRecipeIngredients ? 'ingredient' : 'hidden'} / ${formUseAsRecipeOutput ? 'output' : 'no output'}`;
-  const unitsSummary = `Base: ${formBaseUnit || '-'}, Purchase: ${formPurchaseUnit || '-'}, ${conversionFormula}`;
+  const unitsSummary = `Purchase: ${effectivePurchaseCostSetup.purchaseUnit || '-'}, Internal: ${effectivePurchaseCostSetup.baseUnit || '-'}, ${conversionFormula}`;
   const replenishmentSummary = `Reorder: ${formReorderLevel || 0}, Min: ${formMinimumStockLevel || 0}, Max: ${formMaximumStockLevel || 0}, MOQ: ${formMinimumOrderQuantity || 0}`;
   const approvedVendorsSummary = `${formApprovedVendors.length} vendors configured`;
   const itemSummaryText = `${formItemCode || 'Auto'} - ${getPurchaseCategoryLabel(formCategoryId)} - ${formStatus}`;
-  const costInformationSummary = `Last Rate: ${formatCurrencyPKR(editingItem?.lastPurchaseRate || 0)}, Avg Cost: ${formatCurrencyPKR(editingItem?.averageCost || 0)}`;
-  const stockSummaryText = `Available: ${availableStockPreview} ${formBaseUnit || ''}`;
+  const stockSummaryText = `Available: ${availableStockPreview} ${effectivePurchaseCostSetup.baseUnit || ''}`;
   const purchasingSnapshotSummary = `Preferred Vendor: ${preferredVendorName}, Lead Time: ${formLeadTimeDays || 0} days`;
-  const unitsHasError = formTrackInventory && (!formBaseUnit || !formPurchaseUnit || formConversionFactor <= 0);
+  const unitsHasError =
+    formTrackInventory &&
+    (!effectivePurchaseCostSetup.baseUnit ||
+      !effectivePurchaseCostSetup.purchaseUnit ||
+      effectivePurchaseCostSetup.conversionFactor <= 0 ||
+      (packageContentRequired && (!formPackageContentUnit || formPackageContentQty <= 0)));
   const replenishmentHasError =
     formReorderLevel < 0 ||
     formMinimumStockLevel < 0 ||
@@ -1677,6 +1852,19 @@ export function PurchaseItemMaster({
 
   const buildPurchaseItemEditorSnapshot = (item: PurchaseItem): PurchaseItemEditorSnapshot => {
     const existingMappings = vendorItemMappings.filter((mapping) => mapping.kitchenItemId === item.id);
+    const purchaseUnit = getNormalizedMeasurementUnit(getPurchaseUnit(item));
+    const baseUnit = getNormalizedMeasurementUnit(getBaseUnit(item));
+    const defaultPackageContent = getDefaultPackageContentForPurchaseUnit(purchaseUnit);
+    const packageContentQty =
+      purchaseUnit === 'dozen'
+        ? 12
+        : purchaseUnit !== baseUnit && item.conversionFactor > 0
+          ? item.conversionFactor
+          : defaultPackageContent.packageContentQty;
+    const packageContentUnit =
+      purchaseUnit !== baseUnit && baseUnit
+        ? baseUnit
+        : defaultPackageContent.packageContentUnit;
 
     return {
       itemName: item.itemName,
@@ -1691,9 +1879,11 @@ export function PurchaseItemMaster({
       useAsRecipeOutput: isRecipeOutputEnabled(item),
       costingMethod: getCostingMethod(item),
       issueMethod: getIssueMethod(item),
-      purchaseUnit: getPurchaseUnit(item),
-      baseUnit: getBaseUnit(item),
+      purchaseUnit,
+      baseUnit,
       conversionFactor: item.conversionFactor,
+      packageContentQty,
+      packageContentUnit,
       reorderLevel: item.reorderLevel || 0,
       minimumStockLevel: item.minimumStockLevel || 0,
       maximumStockLevel: item.maximumStockLevel || 0,
@@ -1755,6 +1945,8 @@ export function PurchaseItemMaster({
     setFormPurchaseUnit(snapshot.purchaseUnit);
     setFormBaseUnit(snapshot.baseUnit);
     setFormConversionFactor(snapshot.conversionFactor);
+    setFormPackageContentQty(snapshot.packageContentQty);
+    setFormPackageContentUnit(snapshot.packageContentUnit);
     setFormReorderLevel(snapshot.reorderLevel);
     setFormMinimumStockLevel(snapshot.minimumStockLevel);
     setFormMaximumStockLevel(snapshot.maximumStockLevel);
@@ -1815,7 +2007,11 @@ export function PurchaseItemMaster({
     setFormIssueMethod('fifo');
     setFormPurchaseUnit(preservedDefaults?.purchaseUnit || suggestedSetup.purchaseUnit || fallbackPurchaseUnit);
     setFormBaseUnit(preservedDefaults?.baseUnit || suggestedSetup.baseUnit || fallbackBaseUnit);
-    setFormConversionFactor(preservedDefaults?.conversionFactor ?? suggestedSetup.conversionFactor ?? 1000);
+    setFormConversionFactor(preservedDefaults?.conversionFactor ?? suggestedSetup.conversionFactor ?? 1);
+    setFormPackageContentQty(preservedDefaults?.packageContentQty ?? suggestedSetup.packageContentQty ?? 1);
+    setFormPackageContentUnit(
+      preservedDefaults?.packageContentUnit || suggestedSetup.packageContentUnit || fallbackPackageContentUnit,
+    );
     setFormReorderLevel(preservedDefaults?.reorderLevel ?? 0);
     setFormMinimumStockLevel(0);
     setFormMaximumStockLevel(0);
@@ -1896,6 +2092,8 @@ export function PurchaseItemMaster({
       setFormPurchaseUnit(suggestedSetup.purchaseUnit);
       setFormBaseUnit(suggestedSetup.baseUnit);
       setFormConversionFactor(suggestedSetup.conversionFactor);
+      setFormPackageContentQty(suggestedSetup.packageContentQty);
+      setFormPackageContentUnit(suggestedSetup.packageContentUnit);
       if (suggestedSetup.assignedStoreIds.length > 0) {
         setFormAssignedStoreIds(suggestedSetup.assignedStoreIds);
       }
@@ -1907,14 +2105,16 @@ export function PurchaseItemMaster({
 
   const getBatchEntryDefaults = (): BatchEntryDefaults => ({
     assignedStoreIds: formAssignedStoreIds.filter((storeId) => allowedKitchenStoreIds.has(storeId)),
-    baseUnit: formBaseUnit,
+    baseUnit: effectivePurchaseCostSetup.baseUnit,
     categoryId: formCategoryId,
-    conversionFactor: formConversionFactor,
+    conversionFactor: effectivePurchaseCostSetup.conversionFactor,
     defaultPurchaseCost: formDefaultPurchaseCost,
     leadTimeDays: formLeadTimeDays,
     minimumOrderQuantity: formMinimumOrderQuantity,
+    packageContentQty: formPackageContentQty,
+    packageContentUnit: getNormalizedMeasurementUnit(formPackageContentUnit),
     preferredSupplierId: formPreferredSupplierId,
-    purchaseUnit: formPurchaseUnit,
+    purchaseUnit: effectivePurchaseCostSetup.purchaseUnit,
     reorderLevel: formReorderLevel,
     status: formStatus,
     subCategoryId: formSubCategoryId,
@@ -2196,11 +2396,11 @@ export function PurchaseItemMaster({
   };
 
   const numberValidations: Array<[boolean, string]> = [
-    [formConversionFactor > 0, 'Conversion must be greater than 0'],
+    [effectivePurchaseCostSetup.conversionFactor > 0, 'Package content must be greater than 0'],
     [formReorderLevel >= 0, 'Reorder level cannot be negative'],
     [formMinimumStockLevel >= 0, 'Minimum stock level cannot be negative'],
     [formMaximumStockLevel >= 0, 'Maximum stock level cannot be negative'],
-    [formDefaultPurchaseCost >= 0, 'Default purchase cost cannot be negative'],
+    [formDefaultPurchaseCost >= 0, 'Purchase price cannot be negative'],
     [formLeadTimeDays >= 0, 'Lead time days cannot be negative'],
     [formMinimumOrderQuantity >= 0, 'Minimum order quantity cannot be negative'],
   ];
@@ -2254,6 +2454,10 @@ export function PurchaseItemMaster({
     const assignedKitchenStoreIds = formTrackInventory
       ? formAssignedStoreIds.filter((storeId) => allowedKitchenStoreIds.has(storeId))
       : [];
+    const normalizedPurchaseUnit = getNormalizedMeasurementUnit(formPurchaseUnit);
+    const normalizedBaseUnit = getNormalizedMeasurementUnit(effectivePurchaseCostSetup.baseUnit);
+    const normalizedPackageContentUnit = getNormalizedMeasurementUnit(formPackageContentUnit);
+    const derivedConversionFactor = effectivePurchaseCostSetup.conversionFactor;
     const batchDefaults = getBatchEntryDefaults();
 
     if (!trimmedName) {
@@ -2272,18 +2476,23 @@ export function PurchaseItemMaster({
     }
 
     if (formTrackInventory) {
-      if (!formBaseUnit) {
-        toast.error('Base unit is required when inventory is tracked');
+      if (!normalizedBaseUnit) {
+        toast.error('Internal cost unit could not be derived');
         return;
       }
 
-      if (!formPurchaseUnit) {
+      if (!normalizedPurchaseUnit) {
         toast.error('Purchase unit is required when inventory is tracked');
         return;
       }
 
-      if (formConversionFactor <= 0) {
-        toast.error('Conversion must be greater than 0');
+      if (packageContentRequired && !normalizedPackageContentUnit) {
+        toast.error('Package content unit is required');
+        return;
+      }
+
+      if (derivedConversionFactor <= 0) {
+        toast.error(packageContentRequired ? 'Package content quantity must be greater than 0' : 'Cost basis is incomplete');
         return;
       }
 
@@ -2343,11 +2552,11 @@ export function PurchaseItemMaster({
           useAsRecipeOutput: formUseAsRecipeOutput,
           costingMethod: formCostingMethod,
           issueMethod: formIssueMethod,
-          purchaseUnit: formPurchaseUnit,
-          purchaseUnitId: formPurchaseUnit,
-          issueUnit: formBaseUnit,
-          baseUnitId: formBaseUnit,
-          conversionFactor: formConversionFactor,
+          purchaseUnit: normalizedPurchaseUnit,
+          purchaseUnitId: normalizedPurchaseUnit,
+          issueUnit: normalizedBaseUnit,
+          baseUnitId: normalizedBaseUnit,
+          conversionFactor: derivedConversionFactor,
           storeLocation: primaryStoreLocation,
           assignedKitchenStoreIds,
           currentStock: stockTotalsByItem.get(item.id) ?? item.currentStock,
@@ -2357,6 +2566,7 @@ export function PurchaseItemMaster({
           allowNegativeStock: formAllowNegativeStock,
           preferredSupplierId: preferredVendorId,
           defaultPurchaseCost: formDefaultPurchaseCost,
+          lastPurchaseRate: formDefaultPurchaseCost,
           leadTimeDays: formLeadTimeDays,
           minimumOrderQuantity: formMinimumOrderQuantity,
           taxGroupId: formTaxGroupId || undefined,
@@ -2397,11 +2607,11 @@ export function PurchaseItemMaster({
         useAsRecipeOutput: formUseAsRecipeOutput,
         costingMethod: formCostingMethod,
         issueMethod: formIssueMethod,
-        purchaseUnit: formPurchaseUnit,
-        purchaseUnitId: formPurchaseUnit,
-        issueUnit: formBaseUnit,
-        baseUnitId: formBaseUnit,
-        conversionFactor: formConversionFactor,
+        purchaseUnit: normalizedPurchaseUnit,
+        purchaseUnitId: normalizedPurchaseUnit,
+        issueUnit: normalizedBaseUnit,
+        baseUnitId: normalizedBaseUnit,
+        conversionFactor: derivedConversionFactor,
         storeLocation: primaryStoreLocation,
         assignedKitchenStoreIds,
         currentStock: 0,
@@ -2411,10 +2621,10 @@ export function PurchaseItemMaster({
         allowNegativeStock: formAllowNegativeStock,
         preferredSupplierId: preferredVendorId,
         defaultPurchaseCost: formDefaultPurchaseCost,
+        lastPurchaseRate: formDefaultPurchaseCost,
         leadTimeDays: formLeadTimeDays,
         minimumOrderQuantity: formMinimumOrderQuantity,
         taxGroupId: formTaxGroupId || undefined,
-        lastPurchaseRate: 0,
         createdAt: now,
         updatedAt: now,
       };
@@ -3091,33 +3301,17 @@ export function PurchaseItemMaster({
                       <label className={labelClass}>Item Code</label>
                       <ReadOnlyField value={formItemCode || 'Auto'} />
                     </FieldShell>
-                    <FieldShell className="xl:col-span-3">
+                    <FieldShell className="xl:col-span-2">
                       <label className={labelClass}>Status</label>
                       <select value={formStatus} onChange={(event) => setFormStatus(event.target.value as 'active' | 'inactive')} className={inputClass}>
                         <option value="active">Active</option>
                         <option value="inactive">Inactive</option>
                       </select>
                     </FieldShell>
-                    <div className="xl:col-span-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
-                      <div className="text-slate-500">Preferred Vendor</div>
-                      <div className="mt-1 truncate font-medium text-slate-900">{preferredVendorName}</div>
-                    </div>
-
-                    <FieldShell className="xl:col-span-4">
+                    <FieldShell className="xl:col-span-3">
                       <label className={labelClass}>Category <span className="text-red-500">*</span></label>
                       <select value={formCategoryId} onChange={(event) => handleCategoryChange(event.target.value)} className={inputClass}>
                         {itemCategoryOptions.map((category) => (
-                          <option key={category.value} value={category.value}>
-                            {category.label}
-                          </option>
-                        ))}
-                      </select>
-                    </FieldShell>
-                    <FieldShell className="xl:col-span-4">
-                      <label className={labelClass}>Sub Category</label>
-                      <select value={formSubCategoryId} onChange={(event) => setFormSubCategoryId(event.target.value)} className={inputClass}>
-                        <option value="">Select sub category</option>
-                        {formSubCategoryOptions.map((category) => (
                           <option key={category.value} value={category.value}>
                             {category.label}
                           </option>
@@ -3139,10 +3333,25 @@ export function PurchaseItemMaster({
                         ))}
                       </select>
                     </FieldShell>
+                    <FieldShell className="xl:col-span-5">
+                      <label className={labelClass}>Preferred Vendor</label>
+                      <select value={formPreferredSupplierId} onChange={(event) => syncPreferredVendorSelection(event.target.value)} className={inputClass}>
+                        <option value="">Select vendor</option>
+                        {activeVendors.map((vendor) => (
+                          <option key={vendor.id} value={vendor.id}>
+                            {vendor.vendorName}
+                          </option>
+                        ))}
+                      </select>
+                    </FieldShell>
 
                     <FieldShell className="xl:col-span-3">
                       <label className={labelClass}>Purchase Unit {formTrackInventory ? <span className="text-red-500">*</span> : null}</label>
-                      <select value={formPurchaseUnit} onChange={(event) => setFormPurchaseUnit(event.target.value as MeasurementUnit)} className={inputClass}>
+                      <select
+                        value={formPurchaseUnit}
+                        onChange={(event) => setFormPurchaseUnit(getNormalizedMeasurementUnit(event.target.value))}
+                        className={inputClass}
+                      >
                         {resolvedPurchaseUnitOptions.map((unit) => (
                           <option key={unit.code} value={unit.code}>
                             {formatUnitOptionLabel(unit)}
@@ -3151,22 +3360,12 @@ export function PurchaseItemMaster({
                       </select>
                     </FieldShell>
                     <FieldShell className="xl:col-span-3">
-                      <label className={labelClass}>Base Unit {formTrackInventory ? <span className="text-red-500">*</span> : null}</label>
-                      <select value={formBaseUnit} onChange={(event) => setFormBaseUnit(event.target.value as MeasurementUnit)} className={inputClass}>
-                        {resolvedBaseUnitOptions.map((unit) => (
-                          <option key={unit.code} value={unit.code}>
-                            {formatUnitOptionLabel(unit)}
-                          </option>
-                        ))}
-                      </select>
-                    </FieldShell>
-                    <FieldShell className="xl:col-span-2">
-                      <label className={labelClass}>Conversion {formTrackInventory ? <span className="text-red-500">*</span> : null}</label>
+                      <label className={labelClass}>Purchase Price</label>
                       <input
                         type="number"
                         min="0"
-                        value={formConversionFactor}
-                        onChange={(event) => setFormConversionFactor(Number(event.target.value))}
+                        value={formDefaultPurchaseCost}
+                        onChange={(event) => setFormDefaultPurchaseCost(Number(event.target.value))}
                         className={inputClass}
                       />
                     </FieldShell>
@@ -3180,35 +3379,48 @@ export function PurchaseItemMaster({
                         className={inputClass}
                       />
                     </FieldShell>
-                    <div className="xl:col-span-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
-                      <div className="text-slate-500">Conversion Preview</div>
-                      <div className="mt-1 font-medium text-slate-900">{conversionFormula}</div>
+
+                    {packageContentRequired ? (
+                      <>
+                        <FieldShell className="xl:col-span-2">
+                          <label className={labelClass}>Package Content Qty <span className="text-red-500">*</span></label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.0001"
+                            value={formPackageContentQty}
+                            onChange={(event) => setFormPackageContentQty(Number(event.target.value))}
+                            className={inputClass}
+                          />
+                        </FieldShell>
+                        <FieldShell className="xl:col-span-2">
+                          <label className={labelClass}>Package Content Unit <span className="text-red-500">*</span></label>
+                          <select
+                            value={formPackageContentUnit}
+                            onChange={(event) => setFormPackageContentUnit(getNormalizedMeasurementUnit(event.target.value))}
+                            className={inputClass}
+                          >
+                            {resolvedPackageContentUnitOptions.map((unit) => (
+                              <option key={unit.code} value={unit.code}>
+                                {formatUnitOptionLabel(unit)}
+                              </option>
+                            ))}
+                          </select>
+                        </FieldShell>
+                      </>
+                    ) : null}
+                    <div className="xl:col-span-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                      <div className="text-slate-500">Auto Calculated Base Cost</div>
+                      <div className="mt-1 font-medium text-slate-900">
+                        {formatCurrencyPKR(autoCalculatedBaseCost)} / {autoCalculatedBaseCostUnit || '-'}
+                      </div>
+                      <div className="mt-1 text-slate-500">{conversionFormula}</div>
                     </div>
 
-                    <FieldShell className="xl:col-span-4">
-                      <label className={labelClass}>Preferred Vendor</label>
-                      <select value={formPreferredSupplierId} onChange={(event) => syncPreferredVendorSelection(event.target.value)} className={inputClass}>
-                        <option value="">Select vendor</option>
-                        {activeVendors.map((vendor) => (
-                          <option key={vendor.id} value={vendor.id}>
-                            {vendor.vendorName}
-                          </option>
-                        ))}
-                      </select>
-                    </FieldShell>
-                    <FieldShell className="xl:col-span-2">
-                      <label className={labelClass}>Default Cost</label>
-                      <input
-                        type="number"
-                        min="0"
-                        value={formDefaultPurchaseCost}
-                        onChange={(event) => setFormDefaultPurchaseCost(Number(event.target.value))}
-                        className={inputClass}
-                      />
-                    </FieldShell>
-                    <div className="xl:col-span-6 grid grid-cols-2 gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:grid-cols-4">
+                    <div className="xl:col-span-7 grid grid-cols-2 gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs md:grid-cols-4">
                       <SummaryRow label="Store" value={assignedStoreSummary} />
-                      <SummaryRow label="Unit Setup" value={`${formPurchaseUnit || '-'} to ${formBaseUnit || '-'}`} />
+                      <SummaryRow label="Purchase Unit" value={effectivePurchaseCostSetup.purchaseUnit || '-'} />
+                      <SummaryRow label="Base Cost Unit" value={autoCalculatedBaseCostUnit || '-'} />
                       <SummaryRow label="Lead Time" value={`${formLeadTimeDays || 0}d`} />
                       <SummaryRow label="MOQ" value={`${formMinimumOrderQuantity || 0} ${formPurchaseUnit || ''}`} />
                     </div>
@@ -3324,6 +3536,18 @@ export function PurchaseItemMaster({
                     <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
                       These flags control which kitchen items appear in recipe ingredient lines and recipe output item lists.
                     </div>
+
+                    <FieldShell>
+                      <label className={labelClass}>Sub Category</label>
+                      <select value={formSubCategoryId} onChange={(event) => setFormSubCategoryId(event.target.value)} className={inputClass}>
+                        <option value="">Select sub category</option>
+                        {formSubCategoryOptions.map((category) => (
+                          <option key={category.value} value={category.value}>
+                            {category.label}
+                          </option>
+                        ))}
+                      </select>
+                    </FieldShell>
 
                     <FieldShell>
                       <label className={labelClass}>Description</label>
@@ -3535,7 +3759,7 @@ export function PurchaseItemMaster({
                           <SummaryRow label="Inventory Type" value={getInventoryTypeLabel(formInventoryType)} />
                           <SummaryRow label="Recipe Ingredient" value={formUseInRecipeIngredients ? 'Enabled' : 'Hidden'} />
                           <SummaryRow label="Recipe Output" value={formUseAsRecipeOutput ? 'Enabled' : 'Hidden'} />
-                          <SummaryRow label="Base Unit" value={formBaseUnit || '-'} />
+                          <SummaryRow label="Internal Cost Unit" value={effectivePurchaseCostSetup.baseUnit || '-'} />
                           <SummaryRow label="Status" value={<span className={formStatus === 'active' ? 'text-emerald-700' : 'text-slate-600'}>{formStatus}</span>} />
                         </div>
                       </SectionCard>
@@ -3543,6 +3767,8 @@ export function PurchaseItemMaster({
                       <SectionCard title="Purchasing Snapshot" icon={ClipboardList} summary={purchasingSnapshotSummary}>
                         <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                           <SummaryRow label="Preferred Vendor" value={preferredVendorName} />
+                          <SummaryRow label="Purchase Price" value={formatCurrencyPKR(formDefaultPurchaseCost || 0)} />
+                          <SummaryRow label="Base Cost" value={`${formatCurrencyPKR(autoCalculatedBaseCost)} / ${autoCalculatedBaseCostUnit || '-'}`} />
                           <SummaryRow label="Lead Time" value={`${formLeadTimeDays || 0} days`} />
                           <SummaryRow label="MOQ" value={`${formMinimumOrderQuantity || 0} ${formPurchaseUnit || ''}`} />
                         </div>

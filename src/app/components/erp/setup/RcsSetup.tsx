@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowRightLeft,
   BarChart3,
@@ -695,6 +695,82 @@ export function RcsSetup({ userName, bookings = [], serviceBookings = [] }: RcsS
     'commission-rules': false,
     'approval-settings': false,
   });
+
+  const loadRcsSetupState = useCallback(() => {
+    const nextCategories = (() => {
+      const loaded = loadSetupRcsCategories();
+      return loaded.length > 0 ? loaded : defaultSetupRcsCategories;
+    })();
+    const nextServices = (() => {
+      const loaded = loadSetupRcsServices();
+      return loaded.length > 0 ? loaded : defaultSetupRcsServices;
+    })();
+    const nextVendors = (() => {
+      const loaded = loadSetupRcsVendors();
+      return loaded.length > 0 ? loaded : defaultSetupRcsVendors;
+    })();
+    const nextVendorRates = (() => {
+      const loaded = loadSetupRcsVendorRates();
+      return loaded.length > 0 ? loaded : defaultSetupRcsVendorRates;
+    })();
+    const nextPackages = (() => {
+      const loaded = loadSetupRcsPackages();
+      return loaded.length > 0 ? loaded : defaultSetupRcsPackages;
+    })();
+    const nextCommissionRules = (() => {
+      const loaded = loadSetupRcsCommissionRules();
+      return loaded.length > 0 ? loaded : defaultSetupRcsCommissionRules;
+    })();
+    const nextApprovalSettings = loadSetupRcsApprovalSettings() || defaultSetupRcsApprovalSettings;
+
+    const keepMatchingRecord = <T extends { id: string }>(
+      current: T,
+      records: T[],
+      buildEmpty: () => T,
+    ) => records.find((record) => record.id === current.id) ?? records[0] ?? buildEmpty();
+
+    setCategories(nextCategories);
+    setServices(nextServices);
+    setVendors(nextVendors);
+    setVendorRates(nextVendorRates);
+    setPackages(nextPackages);
+    setCommissionRules(nextCommissionRules);
+    setApprovalSettings(nextApprovalSettings);
+    setCategoryDraft((current) => keepMatchingRecord(current, nextCategories, () => buildEmptyCategory(userName)));
+    setServiceDraft((current) => keepMatchingRecord(current, nextServices, () => buildEmptyService(userName)));
+    setVendorDraft((current) => keepMatchingRecord(current, nextVendors, () => buildEmptyVendor(userName)));
+    setVendorRateDraft((current) => keepMatchingRecord(current, nextVendorRates, () => buildEmptyVendorRate(userName)));
+    setPackageDraft((current) => keepMatchingRecord(current, nextPackages, () => buildEmptyPackage(userName)));
+    setCommissionRuleDraft((current) => keepMatchingRecord(current, nextCommissionRules, () => buildEmptyCommissionRule(userName)));
+  }, [userName]);
+
+  useEffect(() => {
+    const isEditingAnySection = Object.values(editModes).some(Boolean);
+    if (isEditingAnySection) {
+      return;
+    }
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key.includes('rcs')) {
+        loadRcsSetupState();
+      }
+    };
+
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key.includes('rcs')) {
+        loadRcsSetupState();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
+  }, [editModes, loadRcsSetupState]);
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const setEditMode = (section: EditableRcsSection, isEditing: boolean) =>

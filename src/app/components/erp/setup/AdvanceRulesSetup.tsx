@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Banknote, Calendar, Edit2, Save, Shield, X } from 'lucide-react';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
@@ -27,6 +27,37 @@ export function AdvanceRulesSetup({ userName, compact = false }: AdvanceRulesSet
   const [isEditing, setIsEditing] = useState(false);
 
   const activePolicy = editedPolicy || policy;
+
+  useEffect(() => {
+    const reloadPolicy = () => {
+      if (isEditing) {
+        return;
+      }
+
+      setPolicy(loadSetupAdvancePolicy() || defaultSetupAdvancePolicy);
+    };
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key === 'venueops_master_advance_rules') {
+        reloadPolicy();
+      }
+    };
+
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key === 'venueops_master_advance_rules') {
+        reloadPolicy();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
+  }, [isEditing]);
 
   const handleEdit = () => {
     setEditedPolicy({ ...policy });

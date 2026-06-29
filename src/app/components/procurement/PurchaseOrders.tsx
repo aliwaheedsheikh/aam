@@ -22,6 +22,7 @@ import {
   GoodsReceipt,
   KitchenIssueSheet,
   MenuPackage,
+  ProductionCostMethod,
   ProcurementLookupState,
   PurchaseItem,
   PurchaseOrder,
@@ -144,6 +145,7 @@ interface PurchaseOrdersProps {
   dishes?: Dish[];
   recipes?: Recipe[];
   menuPackages?: MenuPackage[];
+  productionCostMethods?: ProductionCostMethod[];
   kitchenIssueSheets?: KitchenIssueSheet[];
   units?: UnitMaster[];
   onVendorsChange: (vendors: Vendor[]) => void;
@@ -366,6 +368,7 @@ export function PurchaseOrders({
   dishes = [],
   recipes = [],
   menuPackages = [],
+  productionCostMethods = [],
   kitchenIssueSheets = [],
   units = [],
   onVendorsChange,
@@ -1009,6 +1012,7 @@ export function PurchaseOrders({
       dishes,
       recipes,
       menuPackages,
+      productionCostMethods,
       purchaseItems,
       storeStocks,
       issueSheets: kitchenIssueSheets,

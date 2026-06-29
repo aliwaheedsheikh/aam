@@ -1,5 +1,5 @@
 import { Fragment, type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Copy, Edit2, Eye, FileText, GripVertical, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Edit2, Eye, FileText, GripVertical, Plus, Search, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrencyPKR } from '../../../lib/locale';
 import {
@@ -18,6 +18,8 @@ import {
   Dish,
   MeasurementUnit,
   MenuPackage,
+  MenuPackageChoiceGroup,
+  ProductionCostMethod,
   PurchaseItem,
   Recipe,
   RecipeCostLine,
@@ -26,6 +28,18 @@ import {
   RecipeIngredient,
   UnitMaster,
 } from '../types';
+import {
+  getDefaultProductionCostMethodUnit,
+  getProductionCostMethodOptionsForCategory,
+  getProductionCostMethodQuantityLabel,
+  getProductionCostMethodRateLabel,
+  getRecipeCostLineDefaultMethod,
+  isProductionCostMethodQuantityEditable,
+  normalizeRecipeCostLineBasis,
+  resolveProductionCostMethodFromLine,
+  shouldProductionCostMethodShowQuantity,
+  shouldProductionCostMethodShowReference,
+} from '../../../lib/productionCostMethods';
 
 interface RecipeCostingProps {
   userName: string;
@@ -33,6 +47,7 @@ interface RecipeCostingProps {
   recipes: Recipe[];
   purchaseItems: PurchaseItem[];
   units: UnitMaster[];
+  productionCostMethods: ProductionCostMethod[];
   menuPackages: MenuPackage[];
   onDishesChange: (dishes: Dish[]) => void;
   onRecipesChange: (recipes: Recipe[]) => void;
@@ -43,46 +58,58 @@ type RecipePresenceFilter = 'all' | 'with-recipe' | 'without-recipe';
 type ProductionTypeFilter = 'all' | 'recipe-based' | 'purchased-ready' | 'service-item';
 type CostingStatusFilter =
   | 'all'
-  | 'profitable'
-  | 'low-margin'
-  | 'zero-margin'
-  | 'loss-making'
-  | 'missing-cost'
-  | 'missing-recipe';
-type RecipeStateFilter = 'all' | 'active' | 'inactive' | 'missing-recipe' | 'not-required';
-type FoodCostBandFilter = 'all' | 'below-30' | '30-40' | '40-50' | 'above-50';
-type MarginFilter = 'all' | 'positive' | 'zero' | 'negative';
-type MissingConfigFilter =
-  | 'all'
-  | 'missing-ingredients'
-  | 'missing-labor-or-utility'
+  | 'complete'
+  | 'missing-purchase-rate'
+  | 'missing-ingredient-cost'
   | 'missing-labor'
   | 'missing-utility'
-  | 'missing-supply-price'
+  | 'missing-packaging'
+  | 'unit-conversion-missing'
+  | 'yield-missing'
+  | 'missing-cost-link'
+  | 'inactive-recipe'
+  | 'missing-recipe';
+type RecipeStateFilter = 'all' | 'active' | 'inactive' | 'missing-recipe' | 'not-required';
+type MissingConfigFilter =
+  | 'all'
+  | 'missing-ingredient-cost'
+  | 'missing-purchase-rate'
+  | 'missing-labor'
+  | 'missing-utility'
+  | 'missing-packaging'
+  | 'unit-conversion-missing'
+  | 'yield-missing'
   | 'missing-category'
   | 'missing-kitchen-section'
   | 'missing-cost-link';
 type RegisterSortKey =
   | 'severity'
   | 'dish'
-  | 'standard-dish-cost'
+  | 'recipe-type'
+  | 'yield'
+  | 'ingredient-cost'
+  | 'total-cost'
   | 'cost-per-unit'
-  | 'selling-price'
-  | 'margin'
-  | 'food-cost'
-  | 'margin-percent';
+  | 'updated-at';
 type SellableProductionType = Extract<Dish['productionType'], 'recipe-based' | 'purchased-ready' | 'service-item'>;
 type CostingStatusKey =
-  | 'profitable'
-  | 'low-margin'
-  | 'zero-margin'
-  | 'loss-making'
-  | 'missing-cost'
+  | 'complete'
+  | 'missing-purchase-rate'
+  | 'missing-ingredient-cost'
+  | 'missing-labor'
+  | 'missing-utility'
+  | 'missing-packaging'
+  | 'unit-conversion-missing'
+  | 'yield-missing'
+  | 'missing-cost-link'
+  | 'inactive-recipe'
   | 'missing-recipe';
 type RecipeType = NonNullable<Recipe['recipeType']>;
 type RecipeStatus = NonNullable<Recipe['status']>;
 type RecipeDialogTab = 'ingredients' | 'costing' | 'evaluation';
-type CommercialEditMode = 'price' | 'margin';
+type RecipeEvaluationMode = 'profit-percent' | 'profit-per-unit';
+type OptionalProductionCostSection = 'utility' | 'packaging' | 'other';
+type OptionalProductionCostSectionState = Record<OptionalProductionCostSection, boolean>;
 type RecipeCopyOptions = {
   ingredients: boolean;
   labor: boolean;
@@ -93,14 +120,23 @@ type RecipeCopyOptions = {
   notes: boolean;
 };
 
-const tableHeadClass = 'px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600';
-const tableCellClass = 'px-3 py-2 text-sm text-slate-700 align-middle';
+const tableHeadClass = 'px-2.5 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600';
+const tableCellClass = 'px-2.5 py-1.5 text-xs text-slate-700 align-middle';
 const compactTableHeadClass = 'px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600';
 const compactTableCellClass = 'px-2 py-1.5 text-xs text-slate-700 align-middle';
 const inputClass = 'h-8 w-full rounded border border-slate-300 bg-white px-2.5 text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
 const compactInputClass = 'h-7 w-full rounded border border-transparent bg-transparent px-1.5 text-xs text-slate-800 hover:border-slate-300 hover:bg-white focus:border-blue-500 focus:bg-white focus:outline-none disabled:text-slate-600';
+const compactSetupInputClass = 'h-7 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
+const compactSetupToggleClass = 'flex h-7 items-center gap-2 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
+const ingredientToolbarInputClass = 'h-7 w-full rounded border border-slate-300 bg-white px-2 text-xs text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
+const ingredientToolbarButtonClass = 'inline-flex h-7 items-center justify-center gap-1 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 hover:bg-slate-50';
+const ingredientPrimaryButtonClass = 'inline-flex h-7 items-center justify-center gap-1 rounded border border-blue-600 bg-blue-600 px-2 text-xs font-medium text-white hover:bg-blue-700';
+const ingredientRowInputClass = 'h-6 w-full rounded border border-transparent bg-transparent px-1 text-[11px] text-slate-800 hover:border-slate-300 hover:bg-white focus:border-blue-500 focus:bg-white focus:outline-none disabled:text-slate-600';
+const costLineInputClass = 'h-6 w-full rounded border border-transparent bg-transparent px-1 text-[11px] text-slate-800 hover:border-slate-300 hover:bg-white focus:border-blue-500 focus:bg-white focus:outline-none disabled:text-slate-600';
+const costLineStaticClass = 'flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-2 text-[11px] text-slate-500';
 const textareaClass = 'min-h-[80px] w-full rounded border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-500';
 const labelClass = 'mb-1 block text-xs font-medium text-slate-700';
+const compactSetupLabelClass = 'mb-0.5 block text-[11px] font-medium text-slate-700';
 const sectionTitleClass = 'border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700';
 
 const serializeRecipeDialogState = (value: unknown) => {
@@ -138,6 +174,12 @@ const defaultRecipeCopyOptions: RecipeCopyOptions = {
   notes: false,
 };
 
+const defaultOptionalProductionCostSectionState: OptionalProductionCostSectionState = {
+  utility: false,
+  packaging: false,
+  other: false,
+};
+
 const kitchenSectionOptions = [
   { value: '', label: 'Select kitchen section' },
   { value: 'hot-kitchen', label: 'Hot Kitchen' },
@@ -151,59 +193,38 @@ const kitchenSectionOptions = [
 
 const recipeCostLineCategoryOrder: RecipeCostLineCategory[] = ['labor', 'utility', 'packaging', 'other'];
 
-const itemUsageRecipeCostLineBasisOptions: Array<{ value: RecipeCostLineBasis; label: string }> = [
-  { value: 'fixed', label: 'Fixed Cost' },
-  { value: 'item-usage', label: 'Item Usage' },
-];
-
-const laborRecipeCostLineBasisOptions: Array<{ value: RecipeCostLineBasis; label: string }> = [
-  { value: 'fixed', label: 'Fixed Cost' },
-  { value: 'per-hour', label: 'Per Hour' },
-  { value: 'per-person', label: 'Per Person' },
-  { value: 'per-daig', label: 'Per Daig' },
-  { value: 'per-head', label: 'Per Head' },
-];
-
 const productionTypeOptions: Array<{ value: SellableProductionType; label: string }> = [
   { value: 'recipe-based', label: 'Recipe Based' },
   { value: 'purchased-ready', label: 'Purchased Ready' },
   { value: 'service-item', label: 'Service Item' },
 ];
 
-const foodCostBandOptions: Array<{ value: FoodCostBandFilter; label: string }> = [
-  { value: 'all', label: 'All Food Cost' },
-  { value: 'below-30', label: 'Below 30%' },
-  { value: '30-40', label: '30% to 40%' },
-  { value: '40-50', label: '40% to 50%' },
-  { value: 'above-50', label: 'Above 50%' },
-];
-
-const marginFilterOptions: Array<{ value: MarginFilter; label: string }> = [
-  { value: 'all', label: 'All Margin' },
-  { value: 'positive', label: 'Positive Margin' },
-  { value: 'zero', label: 'Zero Margin' },
-  { value: 'negative', label: 'Negative Margin' },
-];
-
 const missingConfigOptions: Array<{ value: MissingConfigFilter; label: string }> = [
   { value: 'all', label: 'All Config' },
-  { value: 'missing-ingredients', label: 'Missing Ingredients' },
-  { value: 'missing-labor-or-utility', label: 'Missing Labor / Utility' },
+  { value: 'missing-ingredient-cost', label: 'Missing Ingredient Cost' },
+  { value: 'missing-purchase-rate', label: 'Missing Purchase Rate' },
   { value: 'missing-labor', label: 'Missing Labor Cost' },
   { value: 'missing-utility', label: 'Missing Utility Cost' },
-  { value: 'missing-supply-price', label: 'Missing Supply Price' },
+  { value: 'missing-packaging', label: 'Missing Packaging Cost' },
+  { value: 'unit-conversion-missing', label: 'Unit Conversion Missing' },
+  { value: 'yield-missing', label: 'Yield Missing' },
   { value: 'missing-category', label: 'Missing Category' },
   { value: 'missing-kitchen-section', label: 'Missing Kitchen Section' },
   { value: 'missing-cost-link', label: 'Missing Cost Link' },
 ];
 
 const costingStatusOptions: Array<{ value: CostingStatusFilter; label: string }> = [
-  { value: 'all', label: 'All Costing' },
-  { value: 'profitable', label: 'Profitable' },
-  { value: 'low-margin', label: 'Low Margin' },
-  { value: 'zero-margin', label: 'Zero Margin' },
-  { value: 'loss-making', label: 'Loss Making' },
-  { value: 'missing-cost', label: 'Missing Cost' },
+  { value: 'all', label: 'All Validation' },
+  { value: 'complete', label: 'Complete' },
+  { value: 'missing-purchase-rate', label: 'Missing Purchase Rate' },
+  { value: 'missing-ingredient-cost', label: 'Missing Ingredient Cost' },
+  { value: 'missing-labor', label: 'Missing Labor' },
+  { value: 'missing-utility', label: 'Missing Utility' },
+  { value: 'missing-packaging', label: 'Missing Packaging' },
+  { value: 'unit-conversion-missing', label: 'Unit Conversion Missing' },
+  { value: 'yield-missing', label: 'Yield Missing' },
+  { value: 'missing-cost-link', label: 'Missing Cost Link' },
+  { value: 'inactive-recipe', label: 'Inactive Recipe' },
   { value: 'missing-recipe', label: 'Missing Recipe' },
 ];
 
@@ -218,15 +239,13 @@ const recipeStateOptions: Array<{ value: RecipeStateFilter; label: string }> = [
 const sortOptions: Array<{ value: RegisterSortKey; label: string }> = [
   { value: 'severity', label: 'Status Priority' },
   { value: 'dish', label: 'Dish' },
-  { value: 'standard-dish-cost', label: 'Standard Dish Cost' },
-  { value: 'cost-per-unit', label: 'Standard Cost Per Unit' },
-  { value: 'selling-price', label: 'Selling Price' },
-  { value: 'margin', label: 'Margin' },
-  { value: 'food-cost', label: 'Food Cost %' },
-  { value: 'margin-percent', label: 'Margin %' },
+  { value: 'recipe-type', label: 'Recipe Type' },
+  { value: 'yield', label: 'Standard Yield' },
+  { value: 'ingredient-cost', label: 'Ingredient Cost' },
+  { value: 'total-cost', label: 'Total Recipe Cost' },
+  { value: 'cost-per-unit', label: 'Cost Per Output Unit' },
+  { value: 'updated-at', label: 'Last Updated' },
 ];
-
-const COSTING_FOOD_COST_THRESHOLD = 50;
 
 const preferredOutputInventoryTypes = new Set(['semi-finished-product', 'finished-product']);
 const legacyInventoryTypeMap = {
@@ -355,6 +374,7 @@ const getPurchaseItemUnitCost = (item: PurchaseItem, units: UnitMaster[] = []) =
 };
 
 const formatSalesUnitLabel = (unit?: string) => String(unit || 'unit').replace(/-/g, ' ');
+const formatPerOutputUnitValue = (amount: number, unit?: string) => `${formatCurrencyPKR(amount)}/${formatSalesUnitLabel(unit)}`;
 
 const getDefaultSalesVariant = (dish: Dish) =>
   dish.salesVariants?.find((variant) => variant.isDefault) || dish.salesVariants?.[0];
@@ -381,8 +401,6 @@ const buildFallbackSalesVariant = (dish: Dish, costPerYieldUnit: number) => {
 
 const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now: Date): Dish => {
   const costPerYieldUnit = recipe.costPerYieldUnit ?? recipe.costPerPortion ?? 0;
-  const productionType = resolveDishProductionType(dish);
-  const recipeSellingPricePerYieldUnit = recipe.supplySellingPricePerYieldUnit ?? recipe.suggestedSellingPrice ?? 0;
   const variants = dish.salesVariants?.length
     ? dish.salesVariants
     : [buildFallbackSalesVariant(dish, costPerYieldUnit)];
@@ -390,10 +408,6 @@ const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now:
   const recostedVariants = variants.map((variant, index) => {
     const quantity = Number(variant.quantity ?? variant.salesQuantity ?? 1) || 1;
     const salesUnit = variant.salesUnit || variant.salesUnitId || dish.unitOfSale || 'portion';
-    const nextSellingPrice =
-      productionType === 'purchased-ready' && recipeSellingPricePerYieldUnit > 0
-        ? quantity * recipeSellingPricePerYieldUnit
-        : variant.sellingPrice;
 
     return {
       ...variant,
@@ -402,7 +416,6 @@ const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now:
       quantity,
       salesQuantity: quantity,
       quantityUnit: variant.quantityUnit || salesUnit,
-      sellingPrice: nextSellingPrice,
       estimatedCost: quantity * costPerYieldUnit,
       isDefault: hasDefaultVariant ? Boolean(variant.isDefault) : index === 0,
       active: variant.status ? variant.status !== 'inactive' : variant.active !== false,
@@ -441,6 +454,26 @@ const getPackageLineCost = (dish: Dish, variantId: string | undefined, unit: str
   return (variant?.estimatedCost ?? dish.defaultVariantCost ?? dish.estimatedCost ?? 0) * quantityPerHead;
 };
 
+const getChoiceGroupCostPerHead = (choiceGroup: MenuPackageChoiceGroup) => {
+  if (choiceGroup.dishes.length === 0) {
+    return 0;
+  }
+
+  if (choiceGroup.costingMethod === 'highest-cost') {
+    return Math.max(...choiceGroup.dishes.map((dish) => dish.costPerHead || 0));
+  }
+
+  if (choiceGroup.costingMethod === 'average-cost') {
+    return (
+      choiceGroup.dishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0) /
+      Math.max(choiceGroup.dishes.length, 1)
+    );
+  }
+
+  const defaultDish = choiceGroup.dishes.find((dish) => dish.dishId === choiceGroup.defaultDishId);
+  return defaultDish?.costPerHead || choiceGroup.dishes[0]?.costPerHead || 0;
+};
+
 const recostMenuPackagesForDish = (packages: MenuPackage[], updatedDish: Dish): MenuPackage[] =>
   packages.map((menuPackage) => {
     let packageChanged = false;
@@ -463,6 +496,38 @@ const recostMenuPackagesForDish = (packages: MenuPackage[], updatedDish: Dish): 
         ),
       };
     });
+    const recostedChoiceGroups = (menuPackage.choiceGroups || []).map((choiceGroup) => {
+      let groupChanged = false;
+      const recostedGroupDishes = choiceGroup.dishes.map((packageDish) => {
+        if (packageDish.dishId !== updatedDish.id) {
+          return packageDish;
+        }
+
+        groupChanged = true;
+        return {
+          ...packageDish,
+          dishName: updatedDish.dishName,
+          preparationArea: updatedDish.preparationArea,
+          sourceType: updatedDish.sourceType,
+          costPerHead: getPackageLineCost(
+            updatedDish,
+            packageDish.variantId,
+            packageDish.unit,
+            packageDish.quantityPerHead || 1,
+          ),
+        };
+      });
+
+      if (!groupChanged) {
+        return choiceGroup;
+      }
+
+      packageChanged = true;
+      return {
+        ...choiceGroup,
+        dishes: recostedGroupDishes,
+      };
+    });
 
     if (!packageChanged) {
       return menuPackage;
@@ -471,7 +536,10 @@ const recostMenuPackagesForDish = (packages: MenuPackage[], updatedDish: Dish): 
     return {
       ...menuPackage,
       dishes: recostedDishes,
-      totalCostPerHead: recostedDishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0),
+      choiceGroups: recostedChoiceGroups,
+      totalCostPerHead:
+        recostedDishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0) +
+        recostedChoiceGroups.reduce((sum, choiceGroup) => sum + getChoiceGroupCostPerHead(choiceGroup), 0),
       updatedAt: new Date(),
     };
   });
@@ -501,16 +569,26 @@ const getRecipeStateLabel = (recipeState: Exclude<RecipeStateFilter, 'all'>) => 
 
 const getCostingStatusLabel = (status: CostingStatusKey) => {
   switch (status) {
-    case 'profitable':
-      return 'Profitable';
-    case 'low-margin':
-      return 'Low Margin';
-    case 'zero-margin':
-      return 'Zero Margin';
-    case 'loss-making':
-      return 'Loss Making';
-    case 'missing-cost':
-      return 'Missing Cost';
+    case 'complete':
+      return 'Complete';
+    case 'missing-purchase-rate':
+      return 'Missing Purchase Rate';
+    case 'missing-ingredient-cost':
+      return 'Missing Ingredient Cost';
+    case 'missing-labor':
+      return 'Missing Labor';
+    case 'missing-utility':
+      return 'Missing Utility';
+    case 'missing-packaging':
+      return 'Missing Packaging';
+    case 'unit-conversion-missing':
+      return 'Unit Conversion Missing';
+    case 'yield-missing':
+      return 'Yield Missing';
+    case 'missing-cost-link':
+      return 'Missing Cost Link';
+    case 'inactive-recipe':
+      return 'Inactive Recipe';
     case 'missing-recipe':
       return 'Missing Recipe';
     default:
@@ -519,14 +597,14 @@ const getCostingStatusLabel = (status: CostingStatusKey) => {
 };
 
 const getCostingStatusBadgeClass = (status: CostingStatusKey) => {
-  if (status === 'profitable') {
+  if (status === 'complete') {
     return 'bg-emerald-100 text-emerald-700';
   }
-  if (status === 'low-margin') {
-    return 'bg-amber-100 text-amber-700';
-  }
-  if (status === 'zero-margin') {
+  if (status === 'inactive-recipe') {
     return 'bg-slate-100 text-slate-600';
+  }
+  if (status === 'yield-missing' || status === 'unit-conversion-missing') {
+    return 'bg-amber-100 text-amber-700';
   }
   return 'bg-red-100 text-red-700';
 };
@@ -558,6 +636,77 @@ const getRecipeOutputItemName = (recipe: Recipe | undefined, purchaseItems: Purc
   );
 };
 
+const getRecipeMissingDataBadges = (row: {
+  missingIngredientCost: boolean;
+  missingPurchaseRate: boolean;
+  missingLabor: boolean;
+  missingUtility: boolean;
+  missingPackaging: boolean;
+  missingYield: boolean;
+  unitConversionMissing: boolean;
+  missingCostLink: boolean;
+  missingCategory: boolean;
+  missingKitchenSection: boolean;
+}) => {
+  const badges: string[] = [];
+  if (row.missingIngredientCost) {
+    badges.push('Missing ingredient cost');
+  }
+  if (row.missingPurchaseRate) {
+    badges.push('Missing purchase rate');
+  }
+  if (row.missingLabor) {
+    badges.push('Missing labor');
+  }
+  if (row.missingUtility) {
+    badges.push('Missing utility');
+  }
+  if (row.missingPackaging) {
+    badges.push('Missing packaging');
+  }
+  if (row.unitConversionMissing) {
+    badges.push('Unit conversion missing');
+  }
+  if (row.missingYield) {
+    badges.push('Yield missing');
+  }
+  if (row.missingCostLink) {
+    badges.push('Missing cost link');
+  }
+  if (row.missingCategory) {
+    badges.push('Missing category');
+  }
+  if (row.missingKitchenSection) {
+    badges.push('Missing kitchen section');
+  }
+  return badges;
+};
+
+const deriveOptionalProductionCostSectionState = (recipe?: Recipe): OptionalProductionCostSectionState => {
+  if (!recipe) {
+    return defaultOptionalProductionCostSectionState;
+  }
+
+  const snapshot = getRecipeStandardCostSnapshot(recipe);
+  const hasCategoryLine = (category: OptionalProductionCostSection) =>
+    (recipe.additionalCostLines || []).some((line) => line.category === category);
+
+  return {
+    utility:
+      typeof recipe.utilityCostEnabled === 'boolean'
+        ? recipe.utilityCostEnabled
+        : hasCategoryLine('utility') || snapshot.utilityFuelCost > 0,
+    packaging:
+      typeof recipe.packagingCostEnabled === 'boolean'
+        ? recipe.packagingCostEnabled
+        : hasCategoryLine('packaging') || snapshot.packagingConsumableCost > 0,
+    other:
+      typeof recipe.otherProductionCostEnabled === 'boolean'
+        ? recipe.otherProductionCostEnabled
+        : hasCategoryLine('other') || snapshot.otherProductionCost > 0,
+  };
+};
+
 const getIngredientCategoryKey = (item: PurchaseItem) => item.categoryId || item.category || 'uncategorized';
 
 const formatIngredientCategoryLabel = (value: string) =>
@@ -571,6 +720,33 @@ const getPurchaseItemLastPurchaseRate = (item?: PurchaseItem) =>
   item ? item.lastPurchaseRate || item.lastCost || item.defaultPurchaseCost || 0 : 0;
 
 const getPurchaseItemPurchaseUnit = (item?: PurchaseItem) => item?.purchaseUnitId || item?.purchaseUnit || '-';
+
+const getPurchaseItemRateForUnit = (
+  item: PurchaseItem | undefined,
+  unitId: MeasurementUnit | undefined,
+  units: UnitMaster[] = [],
+) => {
+  if (!item) {
+    return 0;
+  }
+
+  const purchaseRate = getPurchaseItemLastPurchaseRate(item);
+  const purchaseUnitId = item.purchaseUnitId || item.purchaseUnit;
+  if (!unitId || !purchaseUnitId || unitId === purchaseUnitId) {
+    return purchaseRate;
+  }
+
+  const convertedPurchaseQuantity = convertUnitQuantity(1, unitId, purchaseUnitId, units);
+  if (convertedPurchaseQuantity !== null && convertedPurchaseQuantity > 0) {
+    return purchaseRate * convertedPurchaseQuantity;
+  }
+
+  if (unitId === getBaseUnit(item)) {
+    return getPurchaseItemUnitCost(item, units);
+  }
+
+  return purchaseRate;
+};
 
 const getPreferredPurchasedReadyYieldUnit = (item?: PurchaseItem): MeasurementUnit =>
   (item ? (getBaseUnit(item) || getPurchaseItemPurchaseUnit(item)) : '') || 'kg';
@@ -615,9 +791,9 @@ const getRecipeCostLineCategoryLabel = (category: RecipeCostLineCategory) => {
     case 'labor':
       return 'Labor';
     case 'utility':
-      return 'Utility / Fuel';
+      return 'Utilities';
     case 'packaging':
-      return 'Packaging / Consumable';
+      return 'Packaging';
     case 'other':
       return 'Other Production';
     default:
@@ -628,11 +804,11 @@ const getRecipeCostLineCategoryLabel = (category: RecipeCostLineCategory) => {
 const getRecipeCostLineDefaultName = (category: RecipeCostLineCategory) => {
   switch (category) {
     case 'labor':
-      return 'Cook Charge';
+      return 'Labor Cost';
     case 'utility':
-      return 'LPG / Utility';
+      return 'Utility Cost';
     case 'packaging':
-      return 'Packaging / Consumable';
+      return 'Packaging Cost';
     case 'other':
       return 'Other Production Cost';
     default:
@@ -643,13 +819,13 @@ const getRecipeCostLineDefaultName = (category: RecipeCostLineCategory) => {
 const getRecipeCostLinePlaceholder = (category: RecipeCostLineCategory) => {
   switch (category) {
     case 'labor':
-      return 'Cook, helper, loader';
+      return 'Optional description';
     case 'utility':
-      return 'LPG, electricity, water';
+      return 'Optional description';
     case 'packaging':
-      return 'Container, box, foil, label';
+      return 'Optional description';
     case 'other':
-      return 'Cleaning, overhead, misc';
+      return 'Optional description';
     default:
       return 'Cost line';
   }
@@ -714,63 +890,73 @@ const formatDisplayQuantity = (value: number) => {
   return (Math.round(value * 1000) / 1000).toFixed(3).replace(/\.?0+$/, '');
 };
 
-const getCostLineBasisLabel = (basis: RecipeCostLineBasis) =>
-  (
-    {
-      'item-usage': 'Item Usage',
-      'fixed-daig-capacity': 'Per Batch / Daig',
-      'per-batch': 'Per Batch / Daig',
-      'per-daig': 'Per Daig',
-      'per-kg-yield': 'Per KG Output',
-      'per-head': 'Per Head',
-    } as Partial<Record<RecipeCostLineBasis, string>>
-  )[basis] ||
-  laborRecipeCostLineBasisOptions.find((option) => option.value === basis)?.label ||
-  basis.replace(/-/g, ' ');
+const getRecipeIngredientStatus = (
+  ingredient: RecipeIngredient,
+  linkedItem: PurchaseItem | undefined,
+  units: UnitMaster[],
+) => {
+  const entryQuantity = Number(ingredient.entryQuantity ?? ingredient.requiredQuantity ?? ingredient.quantity) || 0;
+  const entryUnitId = ingredient.entryUnitId || ingredient.unit || '-';
+  const entryUnitLabel = formatUnitLabel(entryUnitId, units) || entryUnitId;
+  const baseUnitId = ingredient.baseUnitId || linkedItem?.baseUnitId || linkedItem?.issueUnit || entryUnitId;
+  const baseUnitLabel = formatUnitLabel(baseUnitId, units) || baseUnitId;
+  const purchaseUnitId = linkedItem
+    ? getPurchaseItemPurchaseUnit(linkedItem)
+    : ingredient.lastPurchaseUnit || baseUnitId;
+  const purchaseUnitLabel = formatUnitLabel(purchaseUnitId, units) || purchaseUnitId || '-';
+  const lastPurchaseRate =
+    linkedItem?.lastPurchaseRate || linkedItem?.lastCost || linkedItem?.defaultPurchaseCost || ingredient.lastPurchaseRate || 0;
+  const unitCost = ingredient.unitCost ?? ingredient.costPerUnit ?? 0;
 
-const normalizeRecipeCostLineBasis = (basis?: RecipeCostLineBasis): RecipeCostLineBasis => {
-  if (basis === 'fixed-daig-capacity') {
-    return 'per-batch';
+  if (!linkedItem) {
+    return {
+      label: 'Item missing',
+      badgeClass: 'bg-red-100 text-red-700',
+      detail: 'This ingredient is no longer linked to an active purchase item in Purchase Item Master.',
+    };
   }
 
-  if (basis === 'per-kg-yield') {
-    return 'per-kg-output';
+  if (entryQuantity <= 0) {
+    return {
+      label: 'Qty missing',
+      badgeClass: 'bg-amber-100 text-amber-700',
+      detail: 'Enter the consumed quantity used in the recipe.',
+    };
   }
 
-  return basis || 'fixed';
+  if (ingredient.baseQuantity == null) {
+    return {
+      label: 'Unit mapping needed',
+      badgeClass: 'bg-amber-100 text-amber-700',
+      detail: `Cannot convert ${formatDisplayQuantity(entryQuantity)} ${entryUnitLabel} to ${baseUnitLabel}. Set the purchase/base unit mapping in Purchase Item Master.`,
+    };
+  }
+
+  if (lastPurchaseRate <= 0) {
+    return {
+      label: 'Missing rate',
+      badgeClass: 'bg-red-100 text-red-700',
+      detail: `No last purchase cost is available for ${linkedItem.itemName}. Enter a purchase rate before relying on this recipe cost.`,
+    };
+  }
+
+  return {
+    label: 'Ready',
+    badgeClass: 'bg-emerald-100 text-emerald-700',
+    detail: `${formatDisplayQuantity(entryQuantity)} ${entryUnitLabel} converts to ${formatDisplayQuantity(ingredient.baseQuantity || 0)} ${baseUnitLabel}. Last purchase cost ${formatCurrencyPKR(lastPurchaseRate)} / ${purchaseUnitLabel}. Internal cost ${formatCurrencyPKR(unitCost, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} / ${baseUnitLabel}. Final amount ${formatCurrencyPKR(ingredient.totalCost || 0)}.`,
+  };
 };
 
 const laborPerKgInputUnit = 'kg';
-
-const getRecipeCostLineBasisOptions = (
-  category: RecipeCostLineCategory,
-  selectedBasis?: RecipeCostLineBasis,
-): Array<{ value: RecipeCostLineBasis; label: string }> => {
-  const baseOptions = category === 'labor' ? laborRecipeCostLineBasisOptions : itemUsageRecipeCostLineBasisOptions;
-  if (!selectedBasis || baseOptions.some((option) => option.value === selectedBasis)) {
-    return baseOptions;
-  }
-
-  return [
-    { value: selectedBasis, label: getCostLineBasisLabel(selectedBasis) },
-    ...baseOptions,
-  ];
+const shouldShowRecipeCostReference = (line: RecipeCostLine, methods: ProductionCostMethod[]) => {
+  const selectedMethod = resolveProductionCostMethodFromLine(line, methods);
+  return shouldProductionCostMethodShowReference(selectedMethod, line.calculationBasis, line.category);
 };
 
-const shouldShowRecipeCostReference = (category: RecipeCostLineCategory) => category !== 'labor';
-
-const getRecipeCostLineNameColumnLabel = (category: RecipeCostLineCategory) => {
-  switch (category) {
-    case 'labor':
-      return 'Labor Name';
-    case 'utility':
-      return 'Utility Name';
-    case 'packaging':
-      return 'Packaging Name';
-    default:
-      return 'Cost Name';
-  }
-};
+const getRecipeCostLineNameColumnLabel = (_category: RecipeCostLineCategory) => 'Description';
 
 const resolveRecipeCostReferenceId = (
   referenceId: string | undefined,
@@ -861,6 +1047,49 @@ const getRecipeInputQuantityInKg = (
     return sum + Math.max(baseKg || 0, 0);
   }, 0);
 
+const getYieldQuantityInTargetUnit = (
+  effectiveYield: number,
+  yieldUnitId: MeasurementUnit | undefined,
+  targetUnit: MeasurementUnit,
+  units: UnitMaster[] = [],
+) => {
+  const yieldQuantity = Math.max(effectiveYield || 0, 0);
+  if (yieldQuantity <= 0) {
+    return 0;
+  }
+
+  if (!yieldUnitId || yieldUnitId === targetUnit) {
+    return yieldQuantity;
+  }
+
+  const convertedQuantity = convertUnitQuantity(yieldQuantity, yieldUnitId, targetUnit, units);
+  return Math.max(convertedQuantity ?? yieldQuantity, 0);
+};
+
+const getReferencedIngredientQuantityInKg = (
+  line: RecipeCostLine,
+  ingredients: RecipeIngredient[] = [],
+  purchaseItems: PurchaseItem[] = [],
+  units: UnitMaster[] = [],
+) => {
+  if (line.category === 'labor' && !line.ingredientReferenceId) {
+    return Math.max(getRecipeInputQuantityInKg(ingredients, units), 0);
+  }
+
+  const referencedIngredient = findReferencedIngredient(line, ingredients, purchaseItems);
+  const referencedQuantity = getReferencedIngredientQuantity(line, ingredients, purchaseItems);
+  const referencedUnit =
+    referencedIngredient?.entryUnitId || referencedIngredient?.unit || referencedIngredient?.baseUnitId;
+  if (referencedQuantity > 0 && referencedUnit) {
+    const convertedQuantity = convertUnitQuantity(referencedQuantity, referencedUnit, laborPerKgInputUnit, units);
+    if (convertedQuantity !== null) {
+      return Math.max(convertedQuantity, 0);
+    }
+  }
+
+  return Math.max(referencedQuantity || 0, 0);
+};
+
 const calculateRecipeCostLineQuantity = (
   line: RecipeCostLine,
   effectiveYield: number,
@@ -868,42 +1097,21 @@ const calculateRecipeCostLineQuantity = (
   yieldUnitId?: MeasurementUnit,
   units: UnitMaster[] = [],
   purchaseItems: PurchaseItem[] = [],
+  methods: ProductionCostMethod[] = [],
 ) => {
-  const yieldQuantity = Math.max(effectiveYield || 0, 0);
-  const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
+  const selectedMethod = resolveProductionCostMethodFromLine(line, methods);
+  const calculationBasis = (selectedMethod?.calculationType ||
+    normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLineBasis;
 
-  if (calculationBasis === 'fixed') {
+  if (calculationBasis === 'fixed' || calculationBasis === 'per-event') {
     return 1;
   }
 
-  if (calculationBasis === 'item-usage') {
-    return line.quantity && line.quantity > 0 ? line.quantity : 1;
+  if (!isProductionCostMethodQuantityEditable(selectedMethod, calculationBasis)) {
+    return 1;
   }
 
-  if (calculationBasis === 'per-kg-output') {
-    return yieldQuantity;
-  }
-
-  if (calculationBasis === 'per-kg-input') {
-    if (line.category === 'labor') {
-      return Math.max(getRecipeInputQuantityInKg(ingredients, units), 0);
-    }
-
-    return Math.max(getReferencedIngredientQuantity(line, ingredients, purchaseItems), 0);
-  }
-
-  if (calculationBasis === 'per-batch') {
-    const capacity = line.capacityQuantity && line.capacityQuantity > 0 ? line.capacityQuantity : 12;
-    const capacityUnit = line.unit || yieldUnitId;
-    const capacityInYieldUnit =
-      yieldUnitId && capacityUnit && capacityUnit !== yieldUnitId
-        ? convertUnitQuantity(capacity, capacityUnit, yieldUnitId, units)
-        : capacity;
-
-    return Math.max(1, Math.ceil(yieldQuantity / (capacityInYieldUnit || capacity)));
-  }
-
-  return line.quantity && line.quantity > 0 ? line.quantity : 1;
+  return typeof line.quantity === 'number' && line.quantity >= 0 ? line.quantity : 1;
 };
 
 const syncRecipeCostLine = (
@@ -913,8 +1121,11 @@ const syncRecipeCostLine = (
   yieldUnitId?: MeasurementUnit,
   units: UnitMaster[] = [],
   purchaseItems: PurchaseItem[] = [],
+  methods: ProductionCostMethod[] = [],
 ): RecipeCostLine => {
-  const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
+  const selectedMethod = resolveProductionCostMethodFromLine(line, methods);
+  const calculationBasis = (selectedMethod?.calculationType ||
+    normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLineBasis;
   const normalizedReferenceId = resolveRecipeCostReferenceId(line.ingredientReferenceId, ingredients, purchaseItems);
   const referencedIngredient = findReferencedIngredient(line, ingredients, purchaseItems);
   const referencedPurchaseItem = findReferencedPurchaseItem(line, ingredients, purchaseItems);
@@ -926,37 +1137,42 @@ const syncRecipeCostLine = (
     referencedIngredient?.baseUnitId ||
     referencedIngredient?.unit ||
     referencedIngredient?.entryUnitId;
-  const supportsReference = shouldShowRecipeCostReference(line.category || 'labor');
+  const supportsReference = shouldShowRecipeCostReference({ ...line, calculationBasis }, methods);
+  const defaultUnit =
+    supportsReference && referencedPurchaseItem
+      ? referencedPurchaseItem.purchaseUnitId || referencedPurchaseItem.purchaseUnit || getBaseUnit(referencedPurchaseItem)
+      : calculationBasis === 'item-usage'
+        ? referencedUsageUnit
+        : getDefaultProductionCostMethodUnit(selectedMethod, yieldUnitId || '');
+  const unitOptions = getRecipeCostLineUnitOptions(
+    { unit: line.unit, ingredientReferenceId: normalizedReferenceId },
+    supportsReference ? referencedPurchaseItem : undefined,
+    units,
+    defaultUnit as MeasurementUnit | undefined,
+  );
+  const resolvedUnit =
+    calculationBasis === 'fixed' || calculationBasis === 'per-event'
+      ? undefined
+      : unitOptions.some((option) => option.code === line.unit)
+        ? line.unit
+        : defaultUnit || unitOptions[0]?.code || line.unit;
   const rate =
-    calculationBasis === 'item-usage' && referencedPurchaseItem
-      ? getPurchaseItemUnitCost(referencedPurchaseItem, units)
+    supportsReference && referencedPurchaseItem
+      ? getPurchaseItemRateForUnit(referencedPurchaseItem, resolvedUnit as MeasurementUnit | undefined, units)
       : Number(line.rate) || 0;
-  const capacityQuantity = calculationBasis === 'per-batch'
-    ? line.capacityQuantity && line.capacityQuantity > 0
-      ? line.capacityQuantity
-      : 12
-    : undefined;
-  const quantity = ['fixed', 'per-kg-output', 'per-kg-input'].includes(calculationBasis)
-    ? undefined
-    : calculationBasis === 'per-batch'
-      ? calculateRecipeCostLineQuantity(
-        { ...line, calculationBasis, rate, capacityQuantity },
-        effectiveYield,
-        ingredients,
-        yieldUnitId,
-        units,
-        purchaseItems,
-      )
-      : line.quantity && line.quantity > 0
-        ? line.quantity
-        : 1;
+  const quantity = shouldProductionCostMethodShowQuantity(selectedMethod, calculationBasis)
+    ? typeof line.quantity === 'number' && line.quantity >= 0
+      ? line.quantity
+      : 1
+    : 1;
   const chargeQuantity = calculateRecipeCostLineQuantity(
-    { ...line, calculationBasis, rate, quantity, capacityQuantity },
+    { ...line, calculationBasis, calculationMethodId: selectedMethod?.id || line.calculationMethodId, rate, quantity },
     effectiveYield,
     ingredients,
     yieldUnitId,
     units,
     purchaseItems,
+    methods,
   );
 
   return {
@@ -964,19 +1180,11 @@ const syncRecipeCostLine = (
     category: line.category || 'labor',
     name: line.name || '',
     calculationBasis,
+    calculationMethodId: selectedMethod?.id || line.calculationMethodId,
     rate,
     quantity,
-    capacityQuantity,
-    unit:
-      calculationBasis === 'fixed'
-        ? undefined
-        : calculationBasis === 'item-usage'
-          ? referencedUsageUnit || line.unit
-        : calculationBasis === 'per-kg-input'
-          ? line.category === 'labor'
-            ? laborPerKgInputUnit
-            : referencedIngredientUnit || referencedPurchaseItem?.baseUnitId || referencedPurchaseItem?.issueUnit || line.unit
-          : line.unit,
+    capacityQuantity: undefined,
+    unit: resolvedUnit,
     ingredientReferenceId: supportsReference ? normalizedReferenceId : undefined,
     totalCost: rate * chargeQuantity,
   };
@@ -987,45 +1195,45 @@ const createRecipeCostLine = (
   effectiveYield: number,
   yieldUnitId: MeasurementUnit,
   units: UnitMaster[],
+  methods: ProductionCostMethod[],
   purchaseItems: PurchaseItem[] = [],
 ): RecipeCostLine =>
-  syncRecipeCostLine(
-    {
-      id: `recipe-cost-${Date.now()}-${category}`,
-      category,
-      name: getRecipeCostLineDefaultName(category),
-      calculationBasis: 'fixed',
-      rate: 0,
-      quantity: 1,
-      unit: '',
-      totalCost: 0,
-    },
-    effectiveYield,
-    [],
-    yieldUnitId,
-    units,
-    purchaseItems,
-  );
+  (() => {
+    const defaultMethod = getRecipeCostLineDefaultMethod(category, methods);
+    const calculationBasis = (defaultMethod?.calculationType || 'fixed') as RecipeCostLineBasis;
+    return syncRecipeCostLine(
+      {
+        id: `recipe-cost-${Date.now()}-${category}`,
+        category,
+        name: defaultMethod?.methodName || getRecipeCostLineDefaultName(category),
+        calculationBasis,
+        calculationMethodId: defaultMethod?.id,
+        rate: 0,
+        quantity: 1,
+        unit: getDefaultProductionCostMethodUnit(defaultMethod, yieldUnitId),
+        totalCost: 0,
+      },
+      effectiveYield,
+      [],
+      yieldUnitId,
+      units,
+      purchaseItems,
+      methods,
+    );
+  })();
 
-const getDefaultCostLineUnit = (basis: RecipeCostLineBasis, yieldUnitId: MeasurementUnit) => {
-  switch (normalizeRecipeCostLineBasis(basis)) {
-    case 'item-usage':
-      return '';
-    case 'per-kg-output':
-      return yieldUnitId;
-    case 'per-kg-input':
-      return laborPerKgInputUnit;
-    case 'per-daig':
-      return 'daig';
-    case 'per-hour':
-      return 'hour';
-    case 'per-person':
-      return 'person';
-    case 'per-head':
-      return 'head';
-    default:
-      return '';
+const getDefaultCostLineUnit = (
+  line: Pick<RecipeCostLine, 'calculationMethodId' | 'calculationBasis' | 'category'>,
+  yieldUnitId: MeasurementUnit,
+  methods: ProductionCostMethod[],
+) => {
+  const selectedMethod = resolveProductionCostMethodFromLine(line, methods);
+  const calculationBasis = selectedMethod?.calculationType || normalizeRecipeCostLineBasis(line.calculationBasis);
+  if (calculationBasis === 'item-usage') {
+    return '';
   }
+
+  return getDefaultProductionCostMethodUnit(selectedMethod, yieldUnitId);
 };
 
 const standardizeRecipeCostLine = (
@@ -1035,29 +1243,9 @@ const standardizeRecipeCostLine = (
   yieldUnitId?: MeasurementUnit,
   units: UnitMaster[] = [],
   purchaseItems: PurchaseItem[] = [],
+  methods: ProductionCostMethod[] = [],
 ) => {
-  const syncedLine = syncRecipeCostLine(line, effectiveYield, ingredients, yieldUnitId, units, purchaseItems);
-  if (normalizeRecipeCostLineBasis(syncedLine.calculationBasis) !== 'per-batch') {
-    return syncedLine;
-  }
-
-  return syncRecipeCostLine(
-    {
-      ...syncedLine,
-      calculationBasis: 'fixed',
-      rate: syncedLine.totalCost || 0,
-      quantity: undefined,
-      capacityQuantity: undefined,
-      unit: undefined,
-      ingredientReferenceId: syncedLine.ingredientReferenceId,
-      totalCost: syncedLine.totalCost || 0,
-    },
-    effectiveYield,
-    ingredients,
-    yieldUnitId,
-    units,
-    purchaseItems,
-  );
+  return syncRecipeCostLine(line, effectiveYield, ingredients, yieldUnitId, units, purchaseItems, methods);
 };
 
 const generateRecipeCode = (recipes: Recipe[]) => {
@@ -1086,7 +1274,35 @@ const getIngredientUnitOptions = (
       )
     : recipeUnits;
 
-  return ensureSelectedUnitOption(compatibleUnits, selectedUnitId);
+  let resolvedOptions = ensureSelectedUnitOption(compatibleUnits, selectedUnitId);
+  if (!item) {
+    return resolvedOptions;
+  }
+
+  if (item.purchaseUnitId || item.purchaseUnit) {
+    resolvedOptions = ensureSelectedUnitOption(resolvedOptions, item.purchaseUnitId || item.purchaseUnit);
+  }
+  if (getBaseUnit(item)) {
+    resolvedOptions = ensureSelectedUnitOption(resolvedOptions, getBaseUnit(item));
+  }
+  if (item.issueUnit) {
+    resolvedOptions = ensureSelectedUnitOption(resolvedOptions, item.issueUnit);
+  }
+  return resolvedOptions;
+};
+
+const getRecipeCostLineUnitOptions = (
+  line: Pick<RecipeCostLine, 'unit' | 'ingredientReferenceId'>,
+  item: PurchaseItem | undefined,
+  units: UnitMaster[],
+  fallbackUnitId?: MeasurementUnit,
+) => {
+  if (item) {
+    return getIngredientUnitOptions(item, units, (line.unit || fallbackUnitId) as MeasurementUnit | undefined);
+  }
+
+  const recipeUnits = getUnitsForUsage('recipe', units);
+  return ensureSelectedUnitOption(recipeUnits, (line.unit || fallbackUnitId) as MeasurementUnit | undefined);
 };
 
 const getIngredientBaseQuantity = (
@@ -1260,11 +1476,13 @@ const CollapsibleFormSection = ({
   title,
   open,
   onToggle,
+  contentClassName,
   children,
 }: {
-  title: string;
+  title: React.ReactNode;
   open: boolean;
   onToggle: () => void;
+  contentClassName?: string;
   children: React.ReactNode;
 }) => (
   <section className="rounded border border-slate-200 bg-white">
@@ -1276,7 +1494,7 @@ const CollapsibleFormSection = ({
       {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
       {title}
     </button>
-    {open ? <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">{children}</div> : null}
+    {open ? <div className={contentClassName || 'grid grid-cols-1 gap-3 p-3 md:grid-cols-2'}>{children}</div> : null}
   </section>
 );
 
@@ -1286,6 +1504,7 @@ export function RecipeCosting({
   recipes,
   purchaseItems,
   units,
+  productionCostMethods,
   menuPackages,
   onDishesChange,
   onRecipesChange,
@@ -1300,8 +1519,6 @@ export function RecipeCosting({
   const [recipeStateFilter, setRecipeStateFilter] = useState<RecipeStateFilter>('all');
   const [costingStatusFilter, setCostingStatusFilter] = useState<CostingStatusFilter>('all');
   const [yieldUnitFilter, setYieldUnitFilter] = useState('all');
-  const [foodCostBandFilter, setFoodCostBandFilter] = useState<FoodCostBandFilter>('all');
-  const [marginFilter, setMarginFilter] = useState<MarginFilter>('all');
   const [missingConfigFilter, setMissingConfigFilter] = useState<MissingConfigFilter>('all');
   const [sortKey, setSortKey] = useState<RegisterSortKey>('severity');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
@@ -1310,8 +1527,7 @@ export function RecipeCosting({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [viewMode, setViewMode] = useState(false);
   const [recipeActiveTab, setRecipeActiveTab] = useState<RecipeDialogTab>('ingredients');
-  const [recipeHeaderOpen, setRecipeHeaderOpen] = useState(false);
-  const [yieldSetupOpen, setYieldSetupOpen] = useState(false);
+  const [recipeSetupOpen, setRecipeSetupOpen] = useState(true);
   const [ingredientsOpen, setIngredientsOpen] = useState(true);
   const [preparationNotesOpen, setPreparationNotesOpen] = useState(false);
 
@@ -1327,9 +1543,11 @@ export function RecipeCosting({
   const [wastageEnabled, setWastageEnabled] = useState(false);
   const [expectedWastagePercentage, setExpectedWastagePercentage] = useState(0);
   const [preparationSteps, setPreparationSteps] = useState('');
-  const [sellingPricePerYieldUnit, setSellingPricePerYieldUnit] = useState(0);
-  const [commercialEditMode, setCommercialEditMode] = useState<CommercialEditMode>('price');
-  const [targetMarginPerYieldUnit, setTargetMarginPerYieldUnit] = useState(0);
+  const [utilityCostEnabled, setUtilityCostEnabled] = useState(false);
+  const [packagingCostEnabled, setPackagingCostEnabled] = useState(false);
+  const [otherProductionCostEnabled, setOtherProductionCostEnabled] = useState(false);
+  const [evaluationMode, setEvaluationMode] = useState<RecipeEvaluationMode>('profit-per-unit');
+  const [evaluationValue, setEvaluationValue] = useState(0);
   const [recipeIngredients, setRecipeIngredients] = useState<RecipeIngredient[]>([]);
   const [recipeCostLines, setRecipeCostLines] = useState<RecipeCostLine[]>([]);
   const [draggedCostLineId, setDraggedCostLineId] = useState<string | null>(null);
@@ -1368,12 +1586,14 @@ export function RecipeCosting({
         yieldUnitId,
         preparationTimeMinutes,
         wastageEnabled,
-        expectedWastagePercentage,
-        preparationSteps,
-        sellingPricePerYieldUnit,
-        commercialEditMode,
-        targetMarginPerYieldUnit,
-        recipeIngredients: recipeIngredients.map((ingredient) => ({
+      expectedWastagePercentage,
+      preparationSteps,
+      utilityCostEnabled,
+      packagingCostEnabled,
+      otherProductionCostEnabled,
+      evaluationMode,
+      evaluationValue,
+      recipeIngredients: recipeIngredients.map((ingredient) => ({
           id: ingredient.id,
           itemId: ingredient.itemId || ingredient.purchaseItemId || '',
           itemName: ingredient.itemName || ingredient.purchaseItemName || '',
@@ -1389,6 +1609,7 @@ export function RecipeCosting({
           category: line.category,
           name: line.name,
           calculationBasis: line.calculationBasis,
+          calculationMethodId: line.calculationMethodId || '',
           rate: line.rate,
           quantity: line.quantity,
           capacityQuantity: line.capacityQuantity ?? null,
@@ -1399,6 +1620,9 @@ export function RecipeCosting({
       }),
     [
       expectedWastagePercentage,
+      utilityCostEnabled,
+      packagingCostEnabled,
+      otherProductionCostEnabled,
       kitchenSectionId,
       preparationSteps,
       preparationTimeMinutes,
@@ -1409,9 +1633,8 @@ export function RecipeCosting({
       recipeName,
       recipeStatus,
       recipeType,
-      commercialEditMode,
-      sellingPricePerYieldUnit,
-      targetMarginPerYieldUnit,
+      evaluationMode,
+      evaluationValue,
       wastageEnabled,
       yieldQuantity,
       yieldUnitId,
@@ -1429,8 +1652,6 @@ export function RecipeCosting({
     setRecipeStateFilter('all');
     setCostingStatusFilter('all');
     setYieldUnitFilter('all');
-    setFoodCostBandFilter('all');
-    setMarginFilter('all');
     setMissingConfigFilter('all');
   };
   const applyRegisterFilterPreset = (
@@ -1439,7 +1660,6 @@ export function RecipeCosting({
       productionTypeFilter: ProductionTypeFilter;
       recipeStateFilter: RecipeStateFilter;
       costingStatusFilter: CostingStatusFilter;
-      foodCostBandFilter: FoodCostBandFilter;
       missingConfigFilter: MissingConfigFilter;
     }>,
   ) => {
@@ -1455,9 +1675,6 @@ export function RecipeCosting({
     }
     if (preset.costingStatusFilter) {
       setCostingStatusFilter(preset.costingStatusFilter);
-    }
-    if (preset.foodCostBandFilter) {
-      setFoodCostBandFilter(preset.foodCostBandFilter);
     }
     if (preset.missingConfigFilter) {
       setMissingConfigFilter(preset.missingConfigFilter);
@@ -1526,6 +1743,7 @@ export function RecipeCosting({
       category: line.category,
       name: line.name,
       calculationBasis: line.calculationBasis,
+      calculationMethodId: line.calculationMethodId || '',
       rate: line.rate,
       quantity: line.quantity,
       capacityQuantity: line.capacityQuantity ?? null,
@@ -1535,6 +1753,7 @@ export function RecipeCosting({
     }));
   const buildRecipeDialogSnapshot = (dish: Dish) => {
     const existingRecipe = getLinkedRecipe(dish);
+    const optionalCostSections = deriveOptionalProductionCostSectionState(existingRecipe);
     const linkedPurchaseItem = getPrimaryLinkedPurchaseItem(dish, purchaseItems);
     const resolvedYieldUnitId = resolveRecipeYieldUnitId({
       dish,
@@ -1561,6 +1780,7 @@ export function RecipeCosting({
             resolvedYieldUnitId,
             units,
             purchaseItems,
+            productionCostMethods,
           ),
         )
       : [];
@@ -1581,9 +1801,13 @@ export function RecipeCosting({
       preparationTimeMinutes: existingRecipe?.preparationTimeMinutes ?? existingRecipe?.preparationTime ?? 30,
       expectedWastagePercentage: existingRecipe?.expectedWastagePercentage ?? 0,
       preparationSteps: existingRecipe?.preparationSteps || '',
-      sellingPricePerYieldUnit: standardCostSnapshot.sellingPricePerYieldUnit,
-      commercialEditMode: resolveDishProductionType(selectedDishSnapshot) === 'purchased-ready' ? 'margin' : 'price',
-      targetMarginPerYieldUnit: standardCostSnapshot.marginPerYieldUnit,
+      utilityCostEnabled: optionalCostSections.utility,
+      packagingCostEnabled: optionalCostSections.packaging,
+      otherProductionCostEnabled: optionalCostSections.other,
+      evaluationMode: existingRecipe?.pricingEvaluationMode || 'profit-per-unit',
+      evaluationValue:
+        existingRecipe?.pricingEvaluationValue ??
+        standardCostSnapshot.marginPerYieldUnit,
       recipeIngredients: normalizedIngredients,
       recipeCostLines: normalizedCostLines,
     };
@@ -1613,9 +1837,11 @@ export function RecipeCosting({
       hasExistingWastage: snapshot.hasExistingWastage,
       expectedWastagePercentage: snapshot.expectedWastagePercentage,
       preparationSteps: snapshot.preparationSteps,
-      sellingPricePerYieldUnit: snapshot.sellingPricePerYieldUnit,
-      commercialEditMode: snapshot.commercialEditMode,
-      targetMarginPerYieldUnit: snapshot.targetMarginPerYieldUnit,
+      utilityCostEnabled: snapshot.utilityCostEnabled,
+      packagingCostEnabled: snapshot.packagingCostEnabled,
+      otherProductionCostEnabled: snapshot.otherProductionCostEnabled,
+      evaluationMode: snapshot.evaluationMode,
+      evaluationValue: snapshot.evaluationValue,
       recipeIngredients: serializeRecipeIngredientsForDialog(snapshot.recipeIngredients),
       recipeCostLines: serializeRecipeCostLinesForDialog(snapshot.recipeCostLines),
     });
@@ -1637,10 +1863,9 @@ export function RecipeCosting({
     }
     if (options?.resetUi) {
       setRecipeActiveTab(isPurchasedReadySnapshot ? 'costing' : 'ingredients');
-      setRecipeHeaderOpen(!isPurchasedReadySnapshot && !snapshot.hasExistingRecipe);
-      setYieldSetupOpen(!isPurchasedReadySnapshot && !snapshot.hasExistingRecipe);
+      setRecipeSetupOpen(!isPurchasedReadySnapshot);
       setIngredientsOpen(!isPurchasedReadySnapshot);
-      setPreparationNotesOpen(Boolean(snapshot.preparationSteps));
+      setPreparationNotesOpen(false);
       setIngredientCategoryFilter('');
       setIngredientSearchTerm('');
       setBulkIngredientPickerOpen(false);
@@ -1661,9 +1886,11 @@ export function RecipeCosting({
     setWastageEnabled(snapshot.hasExistingWastage);
     setExpectedWastagePercentage(snapshot.expectedWastagePercentage);
     setPreparationSteps(snapshot.preparationSteps);
-    setSellingPricePerYieldUnit(snapshot.sellingPricePerYieldUnit);
-    setCommercialEditMode(snapshot.commercialEditMode);
-    setTargetMarginPerYieldUnit(snapshot.targetMarginPerYieldUnit);
+    setUtilityCostEnabled(snapshot.utilityCostEnabled);
+    setPackagingCostEnabled(snapshot.packagingCostEnabled);
+    setOtherProductionCostEnabled(snapshot.otherProductionCostEnabled);
+    setEvaluationMode(snapshot.evaluationMode);
+    setEvaluationValue(snapshot.evaluationValue);
     setRecipeIngredients(snapshot.recipeIngredients);
     setRecipeCostLines(snapshot.recipeCostLines);
 
@@ -1685,9 +1912,11 @@ export function RecipeCosting({
       wastageEnabled: snapshot.hasExistingWastage,
       expectedWastagePercentage: snapshot.expectedWastagePercentage,
       preparationSteps: snapshot.preparationSteps,
-      sellingPricePerYieldUnit: snapshot.sellingPricePerYieldUnit,
-      commercialEditMode: snapshot.commercialEditMode,
-      targetMarginPerYieldUnit: snapshot.targetMarginPerYieldUnit,
+      utilityCostEnabled: snapshot.utilityCostEnabled,
+      packagingCostEnabled: snapshot.packagingCostEnabled,
+      otherProductionCostEnabled: snapshot.otherProductionCostEnabled,
+      evaluationMode: snapshot.evaluationMode,
+      evaluationValue: snapshot.evaluationValue,
       recipeIngredients: serializeRecipeIngredientsForDialog(snapshot.recipeIngredients),
       recipeCostLines: serializeRecipeCostLinesForDialog(snapshot.recipeCostLines),
     });
@@ -1713,12 +1942,6 @@ export function RecipeCosting({
             linkedPurchaseItem,
           });
           const purchasedReadyRecipeCost = recipe?.costPerYieldUnit ?? standardCostSnapshot.standardCostPerYieldUnit;
-          const purchasedReadyRecipePrice =
-            recipe?.supplySellingPricePerYieldUnit ?? recipe?.suggestedSellingPrice ?? 0;
-          const purchasedReadyRecipeMargin =
-            recipe?.supplyMarginPerYieldUnit ??
-            (purchasedReadyRecipePrice > 0 ? purchasedReadyRecipePrice - purchasedReadyRecipeCost : undefined);
-          const purchasedReadyRecipeFoodCost = recipe?.supplyFoodCostPercentage ?? recipe?.foodCostPercentage;
           const standardYieldQuantity = standardCostSnapshot.standardYieldQuantity;
           const standardYieldUnit = standardCostSnapshot.standardYieldUnit;
           const standardDishCost = standardCostSnapshot.standardDishCost;
@@ -1728,11 +1951,12 @@ export function RecipeCosting({
           const packagingCost = standardCostSnapshot.packagingConsumableCost;
           const otherProductionCost = standardCostSnapshot.otherProductionCost;
           const wastageCost = standardCostSnapshot.wastageCost;
+          const marginPerOutputUnit = recipe ? standardCostSnapshot.marginPerYieldUnit : 0;
+          const sellingPricePerOutputUnit = recipe ? standardCostSnapshot.sellingPricePerYieldUnit : 0;
+          const optionalCostSections = deriveOptionalProductionCostSectionState(recipe);
           const purchasedUnitCost = linkedPurchaseItem ? getPurchaseItemUnitCost(linkedPurchaseItem, units) : 0;
           const variantCost =
             defaultVariant?.estimatedCost ?? dish.defaultVariantCost ?? dish.estimatedCost ?? 0;
-          const variantPrice =
-            defaultVariant?.sellingPrice ?? dish.defaultSellingPrice ?? dish.sellingPrice ?? 0;
           const serviceDefaultCost = dish.outsourceProfile?.defaultCost ?? variantCost;
           const costPerUnit =
             productionType === 'recipe-based'
@@ -1740,28 +1964,6 @@ export function RecipeCosting({
               : productionType === 'purchased-ready'
                 ? purchasedReadyRecipeCost || variantCost || purchasedUnitCost
                 : serviceDefaultCost;
-          const supplyPricePerUnit =
-            productionType === 'recipe-based'
-              ? standardCostSnapshot.sellingPricePerYieldUnit || recipe?.supplySellingPricePerYieldUnit || variantPrice
-              : productionType === 'purchased-ready'
-                ? purchasedReadyRecipePrice || variantPrice
-                : variantPrice;
-          const marginPerUnit =
-            productionType === 'recipe-based'
-              ? standardCostSnapshot.marginPerYieldUnit
-              : productionType === 'purchased-ready' && typeof purchasedReadyRecipeMargin === 'number'
-                ? purchasedReadyRecipeMargin
-              : dish.grossMargin ?? (supplyPricePerUnit - costPerUnit);
-          const foodCostPercentage =
-            productionType === 'recipe-based'
-              ? standardCostSnapshot.foodCostPercentage
-              : productionType === 'purchased-ready' && typeof purchasedReadyRecipeFoodCost === 'number'
-                ? purchasedReadyRecipeFoodCost
-              : dish.foodCostPercentage ?? (supplyPricePerUnit > 0 ? (costPerUnit / supplyPricePerUnit) * 100 : 0);
-          const marginPercentage =
-            productionType === 'recipe-based'
-              ? standardCostSnapshot.marginPercentage
-              : supplyPricePerUnit > 0 ? (marginPerUnit / supplyPricePerUnit) * 100 : 0;
           const recipeState: Exclude<RecipeStateFilter, 'all'> =
             productionType !== 'recipe-based'
               ? 'not-required'
@@ -1782,27 +1984,77 @@ export function RecipeCosting({
               : productionType === 'purchased-ready'
                 ? linkedPurchaseItem?.itemName || 'Not linked'
                 : dish.outsourceProfile?.vendorName || 'Outside Service';
-          const missingIngredients = productionType === 'recipe-based' && recipeState !== 'missing-recipe' && ingredientCost <= 0;
+          const recipeValidationIngredients =
+            productionType === 'recipe-based'
+              ? (recipe?.ingredients || []).map((ingredient) => syncIngredientRow(ingredient, purchaseItems, units, 1))
+              : [];
+          const missingYield =
+            productionType === 'recipe-based' &&
+            recipeState !== 'missing-recipe' &&
+            (!(standardYieldQuantity > 0) || !standardYieldUnit);
+          const unitConversionMissing =
+            productionType === 'recipe-based' &&
+            recipeState !== 'missing-recipe' &&
+            recipeValidationIngredients.some((ingredient) => {
+              const linkedItem = resolveRecipeIngredientItem(ingredient, purchaseItems);
+              if (!linkedItem) {
+                return false;
+              }
+              const entryQuantity = ingredient.entryQuantity ?? ingredient.requiredQuantity ?? ingredient.quantity ?? 0;
+              const entryUnitId = ingredient.entryUnitId || ingredient.unit;
+              const baseUnitId = ingredient.baseUnitId || ingredient.unit;
+              return getIngredientBaseQuantity(entryQuantity, entryUnitId, baseUnitId, linkedItem, units) === null;
+            });
+          const missingPurchaseRate =
+            (productionType === 'recipe-based' &&
+              recipeState !== 'missing-recipe' &&
+              recipeValidationIngredients.some((ingredient) => {
+                const linkedItem = resolveRecipeIngredientItem(ingredient, purchaseItems);
+                return linkedItem ? getPurchaseItemLastPurchaseRate(linkedItem) <= 0 : false;
+              })) ||
+            (productionType === 'purchased-ready' && Boolean(linkedPurchaseItemId) && purchasedUnitCost <= 0);
+          const missingIngredientCost =
+            productionType === 'recipe-based' &&
+            recipeState !== 'missing-recipe' &&
+            (!recipeValidationIngredients.length || ingredientCost <= 0);
           const missingLabor = productionType === 'recipe-based' && recipeState !== 'missing-recipe' && laborCost <= 0;
-          const missingUtility = productionType === 'recipe-based' && recipeState !== 'missing-recipe' && utilityCost <= 0;
-          const missingSupplyPrice = supplyPricePerUnit <= 0;
+          const missingUtility =
+            productionType === 'recipe-based' &&
+            recipeState !== 'missing-recipe' &&
+            optionalCostSections.utility &&
+            utilityCost <= 0;
+          const missingPackaging =
+            productionType === 'recipe-based' &&
+            recipeState !== 'missing-recipe' &&
+            optionalCostSections.packaging &&
+            packagingCost <= 0;
           const missingCategory = !(dish.categoryId || dish.category);
           const missingKitchenSection = !(dish.kitchenStationId || dish.preparationArea);
           const missingCostLink =
             (productionType === 'purchased-ready' && !linkedPurchaseItemId) ||
             (productionType === 'service-item' && serviceDefaultCost <= 0);
           const costingStatus: CostingStatusKey =
-            productionType === 'recipe-based' && recipeState === 'missing-recipe'
+            recipeState === 'missing-recipe'
               ? 'missing-recipe'
-              : missingIngredients || missingLabor || missingUtility || missingSupplyPrice || missingCostLink
-                ? 'missing-cost'
-                : supplyPricePerUnit > 0 && supplyPricePerUnit < costPerUnit
-                  ? 'loss-making'
-                  : supplyPricePerUnit > 0 && Math.abs(supplyPricePerUnit - costPerUnit) < 0.0001
-                    ? 'zero-margin'
-                    : foodCostPercentage > COSTING_FOOD_COST_THRESHOLD
-                      ? 'low-margin'
-                      : 'profitable';
+              : recipeState === 'inactive'
+                ? 'inactive-recipe'
+                : missingCostLink
+                  ? 'missing-cost-link'
+                  : missingYield
+                    ? 'yield-missing'
+                    : unitConversionMissing
+                      ? 'unit-conversion-missing'
+                      : missingPurchaseRate
+                        ? 'missing-purchase-rate'
+                        : missingIngredientCost
+                          ? 'missing-ingredient-cost'
+                          : missingLabor
+                            ? 'missing-labor'
+                            : missingUtility
+                              ? 'missing-utility'
+                              : missingPackaging
+                                ? 'missing-packaging'
+                                : 'complete';
 
           return {
             id: dish.id,
@@ -1825,31 +2077,36 @@ export function RecipeCosting({
             otherProductionCost,
             wastageCost,
             costPerUnit,
-            supplyPricePerUnit,
-            marginPerUnit,
-            foodCostPercentage,
-            marginPercentage,
+            marginPerOutputUnit,
+            sellingPricePerOutputUnit,
             costingStatus,
             costUnit,
-            missingIngredients,
+            missingIngredientCost,
+            missingPurchaseRate,
             missingLabor,
             missingUtility,
-            missingSupplyPrice,
+            missingPackaging,
+            missingYield,
+            unitConversionMissing,
             missingCategory,
             missingKitchenSection,
             missingCostLink,
+            lastUpdatedAt: recipe?.updatedAt || dish.updatedAt,
             statusSeverity:
               costingStatus === 'missing-recipe'
-                ? 6
-                : costingStatus === 'missing-cost'
                   ? 5
-                  : costingStatus === 'loss-making'
+                  : costingStatus === 'missing-cost-link' || costingStatus === 'unit-conversion-missing'
                     ? 4
-                    : costingStatus === 'zero-margin'
+                    : costingStatus === 'yield-missing' || costingStatus === 'missing-purchase-rate'
                       ? 3
-                      : costingStatus === 'low-margin'
+                      : costingStatus === 'missing-ingredient-cost' ||
+                          costingStatus === 'missing-labor' ||
+                          costingStatus === 'missing-utility' ||
+                          costingStatus === 'missing-packaging'
                         ? 2
-                        : 1,
+                        : costingStatus === 'inactive-recipe'
+                          ? 1
+                          : 0,
           };
         }),
     [dishes, purchaseItems, recipes, units],
@@ -1905,24 +2162,15 @@ export function RecipeCosting({
       const matchesRecipeState = recipeStateFilter === 'all' || row.recipeState === recipeStateFilter;
       const matchesCostingStatus = costingStatusFilter === 'all' || row.costingStatus === costingStatusFilter;
       const matchesYieldUnit = yieldUnitFilter === 'all' || row.costUnit === yieldUnitFilter;
-      const matchesFoodCostBand =
-        foodCostBandFilter === 'all' ||
-        (foodCostBandFilter === 'below-30' && row.foodCostPercentage < 30) ||
-        (foodCostBandFilter === '30-40' && row.foodCostPercentage >= 30 && row.foodCostPercentage < 40) ||
-        (foodCostBandFilter === '40-50' && row.foodCostPercentage >= 40 && row.foodCostPercentage <= 50) ||
-        (foodCostBandFilter === 'above-50' && row.foodCostPercentage > 50);
-      const matchesMargin =
-        marginFilter === 'all' ||
-        (marginFilter === 'positive' && row.marginPerUnit > 0) ||
-        (marginFilter === 'zero' && Math.abs(row.marginPerUnit) < 0.0001) ||
-        (marginFilter === 'negative' && row.marginPerUnit < 0);
       const matchesMissingConfig =
         missingConfigFilter === 'all' ||
-        (missingConfigFilter === 'missing-ingredients' && row.missingIngredients) ||
-        (missingConfigFilter === 'missing-labor-or-utility' && (row.missingLabor || row.missingUtility)) ||
+        (missingConfigFilter === 'missing-ingredient-cost' && row.missingIngredientCost) ||
+        (missingConfigFilter === 'missing-purchase-rate' && row.missingPurchaseRate) ||
         (missingConfigFilter === 'missing-labor' && row.missingLabor) ||
         (missingConfigFilter === 'missing-utility' && row.missingUtility) ||
-        (missingConfigFilter === 'missing-supply-price' && row.missingSupplyPrice) ||
+        (missingConfigFilter === 'missing-packaging' && row.missingPackaging) ||
+        (missingConfigFilter === 'unit-conversion-missing' && row.unitConversionMissing) ||
+        (missingConfigFilter === 'yield-missing' && row.missingYield) ||
         (missingConfigFilter === 'missing-category' && row.missingCategory) ||
         (missingConfigFilter === 'missing-kitchen-section' && row.missingKitchenSection) ||
         (missingConfigFilter === 'missing-cost-link' && row.missingCostLink);
@@ -1937,8 +2185,6 @@ export function RecipeCosting({
         matchesRecipeState &&
         matchesCostingStatus &&
         matchesYieldUnit &&
-        matchesFoodCostBand &&
-        matchesMargin &&
         matchesMissingConfig
       );
     });
@@ -1951,23 +2197,23 @@ export function RecipeCosting({
       if (sortKey === 'dish') {
         return left.dish.dishName.localeCompare(right.dish.dishName) * direction;
       }
-      if (sortKey === 'standard-dish-cost') {
+      if (sortKey === 'recipe-type') {
+        return left.recipeType.localeCompare(right.recipeType) * direction || left.dish.dishName.localeCompare(right.dish.dishName);
+      }
+      if (sortKey === 'yield') {
+        return (left.standardYieldQuantity - right.standardYieldQuantity) * direction;
+      }
+      if (sortKey === 'ingredient-cost') {
+        return (left.ingredientCost - right.ingredientCost) * direction;
+      }
+      if (sortKey === 'total-cost') {
         return (left.standardDishCost - right.standardDishCost) * direction;
       }
       if (sortKey === 'cost-per-unit') {
         return (left.costPerUnit - right.costPerUnit) * direction;
       }
-      if (sortKey === 'selling-price') {
-        return (left.supplyPricePerUnit - right.supplyPricePerUnit) * direction;
-      }
-      if (sortKey === 'margin') {
-        return (left.marginPerUnit - right.marginPerUnit) * direction;
-      }
-      if (sortKey === 'food-cost') {
-        return (left.foodCostPercentage - right.foodCostPercentage) * direction;
-      }
-      if (sortKey === 'margin-percent') {
-        return (left.marginPercentage - right.marginPercentage) * direction;
+      if (sortKey === 'updated-at') {
+        return ((new Date(left.lastUpdatedAt || 0).getTime()) - (new Date(right.lastUpdatedAt || 0).getTime())) * direction;
       }
       return left.dish.dishName.localeCompare(right.dish.dishName);
     });
@@ -1982,8 +2228,6 @@ export function RecipeCosting({
     recipeStateFilter,
     costingStatusFilter,
     yieldUnitFilter,
-    foodCostBandFilter,
-    marginFilter,
     missingConfigFilter,
     sortDirection,
     sortKey,
@@ -1997,14 +2241,16 @@ export function RecipeCosting({
     const withoutRecipeCount = allBanquetMenuItems.filter((row) => row.recipeState === 'missing-recipe').length;
     const activeRecipesCount = allBanquetMenuItems.filter((row) => row.recipeState === 'active').length;
     const inactiveRecipesCount = allBanquetMenuItems.filter((row) => row.recipeState === 'inactive').length;
-    const avgFoodCostSource = allBanquetMenuItems.filter((row) => row.supplyPricePerUnit > 0 && Number.isFinite(row.foodCostPercentage));
-    const avgFoodCost =
-      avgFoodCostSource.length > 0
-        ? avgFoodCostSource.reduce((sum, row) => sum + row.foodCostPercentage, 0) / avgFoodCostSource.length
+    const averageCostSource = allBanquetMenuItems.filter((row) => row.costPerUnit > 0);
+    const averageCostPerUnit =
+      averageCostSource.length > 0
+        ? averageCostSource.reduce((sum, row) => sum + row.costPerUnit, 0) / averageCostSource.length
         : 0;
+    const recentThreshold = new Date();
+    recentThreshold.setDate(recentThreshold.getDate() - 7);
 
     return {
-      totalMenuItems: allBanquetMenuItems.length,
+      totalRecipes: allBanquetMenuItems.length,
       recipeBasedCount,
       purchasedReadyCount,
       serviceItemCount,
@@ -2012,14 +2258,22 @@ export function RecipeCosting({
       withoutRecipeCount,
       activeRecipesCount,
       inactiveRecipesCount,
-      avgFoodCost,
-      highFoodCostCount: allBanquetMenuItems.filter((row) => row.foodCostPercentage > COSTING_FOOD_COST_THRESHOLD).length,
-      zeroMarginCount: allBanquetMenuItems.filter((row) => row.costingStatus === 'zero-margin').length,
-      lossMakingCount: allBanquetMenuItems.filter((row) => row.costingStatus === 'loss-making').length,
-      missingSupplyPriceCount: allBanquetMenuItems.filter((row) => row.missingSupplyPrice).length,
-      missingIngredientCostCount: allBanquetMenuItems.filter((row) => row.missingIngredients).length,
+      completeRecipesCount: allBanquetMenuItems.filter((row) => row.costingStatus === 'complete').length,
+      incompleteRecipesCount: allBanquetMenuItems.filter((row) => row.costingStatus !== 'complete').length,
+      missingPurchaseRateCount: allBanquetMenuItems.filter((row) => row.missingPurchaseRate).length,
+      missingIngredientCostCount: allBanquetMenuItems.filter((row) => row.missingIngredientCost).length,
+      missingLaborCount: allBanquetMenuItems.filter((row) => row.missingLabor).length,
+      missingUtilityCount: allBanquetMenuItems.filter((row) => row.missingUtility).length,
       missingLaborUtilityCount: allBanquetMenuItems.filter((row) => row.missingLabor || row.missingUtility).length,
+      missingPackagingCount: allBanquetMenuItems.filter((row) => row.missingPackaging).length,
+      unitConversionMissingCount: allBanquetMenuItems.filter((row) => row.unitConversionMissing).length,
+      yieldMissingCount: allBanquetMenuItems.filter((row) => row.missingYield).length,
       missingCostLinkCount: allBanquetMenuItems.filter((row) => row.missingCostLink).length,
+      averageCostPerUnit,
+      recentlyUpdatedCount: allBanquetMenuItems.filter((row) => {
+        const updatedAt = row.lastUpdatedAt ? new Date(row.lastUpdatedAt) : null;
+        return updatedAt ? updatedAt >= recentThreshold : false;
+      }).length,
     };
   }, [allBanquetMenuItems]);
 
@@ -2034,7 +2288,6 @@ export function RecipeCosting({
   const selectedCopyRecipe = copySourceRecipeId ? recipesById.get(copySourceRecipeId) : undefined;
   const selectedDishProductionType = selectedDish ? resolveDishProductionType(selectedDish) : 'recipe-based';
   const isPurchasedReadyDialog = selectedDishProductionType === 'purchased-ready';
-  const isRecipeBasedDialog = selectedDishProductionType === 'recipe-based';
   const selectedLinkedPurchaseItem = selectedDish ? getPrimaryLinkedPurchaseItem(selectedDish, purchaseItems) : undefined;
   const selectedPurchasedReadyUnitCost = selectedLinkedPurchaseItem ? getPurchaseItemUnitCost(selectedLinkedPurchaseItem, units) : 0;
 
@@ -2055,18 +2308,34 @@ export function RecipeCosting({
       ? selectedPurchasedReadyUnitCost * effectiveYieldQuantity
       : standardIngredientBomCost;
   const sourceRecipeCostLines = recipeCostLines.map((line) =>
-    standardizeRecipeCostLine(line, effectiveYieldQuantity, standardRecipeIngredients, yieldUnitId, units, purchaseItems),
+    standardizeRecipeCostLine(
+      line,
+      effectiveYieldQuantity,
+      standardRecipeIngredients,
+      yieldUnitId,
+      units,
+      purchaseItems,
+      productionCostMethods,
+    ),
   );
-  const sourceLaborCost = sourceRecipeCostLines
+  const optionalProductionCostSectionState: OptionalProductionCostSectionState = {
+    utility: utilityCostEnabled,
+    packaging: packagingCostEnabled,
+    other: otherProductionCostEnabled,
+  };
+  const activeSourceRecipeCostLines = sourceRecipeCostLines.filter(
+    (line) => line.category === 'labor' || optionalProductionCostSectionState[line.category as OptionalProductionCostSection],
+  );
+  const sourceLaborCost = activeSourceRecipeCostLines
     .filter((line) => line.category === 'labor')
     .reduce((sum, line) => sum + (line.totalCost || 0), 0);
-  const sourceUtilitiesCost = sourceRecipeCostLines
+  const sourceUtilitiesCost = activeSourceRecipeCostLines
     .filter((line) => line.category === 'utility')
     .reduce((sum, line) => sum + (line.totalCost || 0), 0);
-  const sourcePackagingCost = sourceRecipeCostLines
+  const sourcePackagingCost = activeSourceRecipeCostLines
     .filter((line) => line.category === 'packaging')
     .reduce((sum, line) => sum + (line.totalCost || 0), 0);
-  const sourceOtherProductionCost = sourceRecipeCostLines
+  const sourceOtherProductionCost = activeSourceRecipeCostLines
     .filter((line) => line.category === 'other')
     .reduce((sum, line) => sum + (line.totalCost || 0), 0);
   const sourceAdditionalCost =
@@ -2080,10 +2349,11 @@ export function RecipeCosting({
     standardWastageCost;
   const costPerYieldUnitBeforeCommercial =
     effectiveYieldQuantity > 0 ? standardDishCostBeforeCommercial / effectiveYieldQuantity : 0;
-  const resolvedSellingPricePerYieldUnit =
-    isPurchasedReadyDialog && commercialEditMode === 'margin'
-      ? costPerYieldUnitBeforeCommercial + targetMarginPerYieldUnit
-      : sellingPricePerYieldUnit;
+  const evaluatedProfitPerYieldUnit =
+    evaluationMode === 'profit-percent'
+      ? (costPerYieldUnitBeforeCommercial * Math.max(evaluationValue, 0)) / 100
+      : Math.max(evaluationValue, 0);
+  const resolvedSellingPricePerYieldUnit = costPerYieldUnitBeforeCommercial + evaluatedProfitPerYieldUnit;
   const standardMetrics = calculateStandardRecipeMetrics({
     standardYieldQuantity: effectiveYieldQuantity,
     ingredientCost: sourceIngredientCost,
@@ -2101,35 +2371,37 @@ export function RecipeCosting({
   const packagingConsumableCost = standardMetrics.packagingConsumableCost;
   const otherProductionCost = standardMetrics.otherProductionCost;
   const additionalCost = laborCost + utilitiesCost + packagingConsumableCost + otherProductionCost;
+  const summarizedOtherCost = otherProductionCost + wastageCost;
   const laborCostLines = sourceRecipeCostLines.filter((line) => line.category === 'labor');
   const utilityCostLines = sourceRecipeCostLines.filter((line) => line.category === 'utility');
   const packagingCostLines = sourceRecipeCostLines.filter((line) => line.category === 'packaging');
   const otherProductionCostLines = sourceRecipeCostLines.filter((line) => line.category === 'other');
   const visibleProductionCostSummaries = [
-    { key: 'labor', label: 'Labor', amount: laborCost, rows: laborCostLines },
-    { key: 'utility', label: 'Utilities', amount: utilitiesCost, rows: utilityCostLines },
-    { key: 'packaging', label: 'Packaging', amount: packagingConsumableCost, rows: packagingCostLines },
-    { key: 'other', label: 'Other', amount: otherProductionCost, rows: otherProductionCostLines },
-  ].filter((entry) => entry.rows.length > 0);
+    { key: 'labor', label: 'Labor', amount: laborCost, enabled: true },
+    { key: 'utility', label: 'Utilities', amount: utilitiesCost, enabled: utilityCostEnabled },
+    { key: 'packaging', label: 'Packaging', amount: packagingConsumableCost, enabled: packagingCostEnabled },
+    { key: 'other', label: 'Other', amount: otherProductionCost, enabled: otherProductionCostEnabled },
+  ].filter((entry) => entry.enabled);
   const visibleProductionCostSections = [
-    { key: 'labor', category: 'labor' as const, title: 'Labor Costs', rows: laborCostLines, total: laborCost },
-    { key: 'utility', category: 'utility' as const, title: 'Utility Costs', rows: utilityCostLines, total: utilitiesCost },
-    { key: 'packaging', category: 'packaging' as const, title: 'Packaging / Consumable Costs', rows: packagingCostLines, total: packagingConsumableCost },
-    { key: 'other', category: 'other' as const, title: 'Other Production Costs', rows: otherProductionCostLines, total: otherProductionCost },
-  ].filter((entry) => entry.rows.length > 0);
+    { key: 'labor', category: 'labor' as const, title: 'Labor Costs', rows: laborCostLines, total: laborCost, enabled: true },
+    { key: 'utility', category: 'utility' as const, title: 'Utility Costs', rows: utilityCostLines, total: utilitiesCost, enabled: utilityCostEnabled },
+    { key: 'packaging', category: 'packaging' as const, title: 'Packaging / Consumable Costs', rows: packagingCostLines, total: packagingConsumableCost, enabled: packagingCostEnabled },
+    { key: 'other', category: 'other' as const, title: 'Other Production Costs', rows: otherProductionCostLines, total: otherProductionCost, enabled: otherProductionCostEnabled },
+  ].filter((entry) => entry.enabled);
   const productionCostSummaryText =
     visibleProductionCostSummaries.length > 0
       ? visibleProductionCostSummaries.map((entry) => `${entry.label} ${formatCurrencyPKR(entry.amount)}`).join(' | ')
       : 'No add-ons';
   const totalRecipeCost = standardMetrics.standardDishCost;
   const costPerYieldUnit = standardMetrics.standardCostPerYieldUnit;
-  const marginPerYieldUnit = standardMetrics.marginPerYieldUnit;
   const supplySellingPricePerYieldUnit = standardMetrics.sellingPricePerYieldUnit;
-  const sellingPriceTotal = supplySellingPricePerYieldUnit * effectiveYieldQuantity;
-  const totalMargin = sellingPriceTotal - totalRecipeCost;
   const foodCostPercentage = standardMetrics.foodCostPercentage;
-  const marginPercentage = standardMetrics.marginPercentage;
   const yieldUnitLabel = formatUnitLabel(yieldUnitId, units) || yieldUnitId || 'unit';
+  const costingKpiStripEntries = [
+    { key: 'labor', label: 'Labor', value: formatCurrencyPKR(laborCost) },
+    { key: 'utility', label: 'Utilities', value: formatCurrencyPKR(utilitiesCost) },
+    { key: 'standard-cost', label: `Standard Cost / ${yieldUnitLabel}`, value: formatCurrencyPKR(costPerYieldUnit) },
+  ];
   const formattedYieldQuantity = formatDisplayQuantity(effectiveYieldQuantity);
   const standardYieldSummary = `${formattedYieldQuantity} ${yieldUnitLabel}`;
   const selectedPurchaseCostUnitId = selectedLinkedPurchaseItem
@@ -2148,10 +2420,10 @@ export function RecipeCosting({
     ? `${viewMode ? 'View Purchased Ready Costing' : currentRecipe ? 'Edit Purchased Ready Costing' : 'Create Purchased Ready Costing'}: ${selectedDish?.dishName || ''}`
     : `${viewMode ? 'View Recipe' : selectedDish?.hasRecipe ? 'Edit Recipe' : 'Create Recipe'}: ${selectedDish?.dishName || ''}`;
   const dialogSubtitle = isPurchasedReadyDialog
-    ? 'Compact kitchen ERP cost and selling profile'
-    : 'Compact kitchen ERP recipe / BOM';
+    ? 'Compact kitchen ERP purchased-ready cost worksheet'
+    : 'Compact kitchen ERP recipe costing worksheet';
   const ingredientSummaryLabel = isPurchasedReadyDialog ? 'Purchase Cost' : 'Ingredient Cost';
-  const evaluationTabLabel = isPurchasedReadyDialog ? 'Commercial' : 'Evaluation';
+  const evaluationTabLabel = 'Evaluation';
   const costingTabLabel = isPurchasedReadyDialog ? 'Costing & Usage' : 'Labor & Utilities';
   const saveButtonLabel = isPurchasedReadyDialog ? 'Save Costing' : 'Save Recipe';
   const sortedEvaluationIngredientRows = [...pricedRecipeIngredients]
@@ -2294,6 +2566,7 @@ export function RecipeCosting({
       toast.error('Select a recipe to copy from');
       return;
     }
+    const copiedOptionalCostSections = deriveOptionalProductionCostSectionState(selectedCopyRecipe);
 
     const selectedSections = Object.entries(copyOptions).filter(([, enabled]) => enabled);
     if (selectedSections.length === 0) {
@@ -2382,6 +2655,7 @@ export function RecipeCosting({
             nextYieldUnitId,
             units,
             purchaseItems,
+            productionCostMethods,
           ),
         );
 
@@ -2417,6 +2691,15 @@ export function RecipeCosting({
         ...copiedPackagingLines,
         ...copiedOtherLines,
       ]);
+      if (copyOptions.utility) {
+        setUtilityCostEnabled(copiedOptionalCostSections.utility);
+      }
+      if (copyOptions.packaging) {
+        setPackagingCostEnabled(copiedOptionalCostSections.packaging);
+      }
+      if (copyOptions.other) {
+        setOtherProductionCostEnabled(copiedOptionalCostSections.other);
+      }
     }
 
     if (copyOptions.notes) {
@@ -2511,7 +2794,7 @@ export function RecipeCosting({
   const handleAddRecipeCostLine = (category: RecipeCostLineCategory) => {
     setRecipeCostLines((current) => [
       ...current,
-      createRecipeCostLine(category, effectiveYieldQuantity, yieldUnitId, units, purchaseItems),
+      createRecipeCostLine(category, effectiveYieldQuantity, yieldUnitId, units, productionCostMethods, purchaseItems),
     ]);
     setRecipeActiveTab('costing');
   };
@@ -2520,7 +2803,7 @@ export function RecipeCosting({
     lineId: string,
     field: keyof Pick<
       RecipeCostLine,
-      'name' | 'calculationBasis' | 'rate' | 'quantity' | 'capacityQuantity' | 'unit' | 'ingredientReferenceId'
+      'name' | 'calculationBasis' | 'calculationMethodId' | 'rate' | 'quantity' | 'capacityQuantity' | 'unit' | 'ingredientReferenceId'
     >,
     value: string | number,
   ) => {
@@ -2533,11 +2816,24 @@ export function RecipeCosting({
 
       const numericFields = new Set(['rate', 'quantity', 'capacityQuantity']);
       const fieldValue = numericFields.has(field) ? Number(value) : value;
+      const currentSelectedMethod = resolveProductionCostMethodFromLine(currentLine, productionCostMethods);
+      const selectedMethod =
+        field === 'calculationMethodId'
+          ? productionCostMethods.find((method) => method.id === String(value))
+          : resolveProductionCostMethodFromLine(currentLine, productionCostMethods);
       const nextBasis =
         field === 'calculationBasis'
           ? normalizeRecipeCostLineBasis(fieldValue as RecipeCostLineBasis)
-          : normalizeRecipeCostLineBasis(currentLine.calculationBasis);
-      const supportsReference = shouldShowRecipeCostReference(currentLine.category);
+          : (selectedMethod?.calculationType ||
+              normalizeRecipeCostLineBasis(currentLine.calculationBasis)) as RecipeCostLineBasis;
+      const supportsReference = shouldShowRecipeCostReference(
+          {
+            ...currentLine,
+            calculationBasis: nextBasis,
+            calculationMethodId: selectedMethod?.id || currentLine.calculationMethodId,
+          },
+        productionCostMethods,
+      );
       const nextReferenceId =
         !supportsReference
           ? undefined
@@ -2547,46 +2843,64 @@ export function RecipeCosting({
       const referencedPurchaseItem = nextReferenceId
         ? purchaseItems.find((item) => item.id === nextReferenceId)
         : undefined;
-      const nextReferencedIngredient = nextReferenceId
-        ? standardRecipeIngredients.find(
-          (ingredient) => ingredient.itemId === nextReferenceId || ingredient.purchaseItemId === nextReferenceId,
-        )
-        : undefined;
+      const nextMethodSupportsReference = shouldProductionCostMethodShowReference(selectedMethod, nextBasis, currentLine.category);
+      const nextDefaultUnit = getDefaultCostLineUnit(
+        {
+          ...currentLine,
+          calculationBasis: nextBasis,
+          calculationMethodId: selectedMethod?.id || currentLine.calculationMethodId,
+        },
+        yieldUnitId,
+        productionCostMethods,
+      );
+      const nextFallbackUnit =
+        nextMethodSupportsReference && referencedPurchaseItem
+          ? referencedPurchaseItem.purchaseUnitId || referencedPurchaseItem.purchaseUnit || getBaseUnit(referencedPurchaseItem)
+          : nextDefaultUnit;
+      const nextUnitOptions = getRecipeCostLineUnitOptions(
+        {
+          unit: currentLine.unit,
+          ingredientReferenceId: nextReferenceId,
+        },
+        nextMethodSupportsReference ? referencedPurchaseItem : undefined,
+        units,
+        nextFallbackUnit as MeasurementUnit | undefined,
+      );
+      const resolvedNextUnit =
+        field === 'unit'
+          ? String(value)
+          : nextUnitOptions.some((option) => option.code === currentLine.unit)
+            ? currentLine.unit
+            : nextFallbackUnit || nextUnitOptions[0]?.code || currentLine.unit || nextDefaultUnit;
+      const nextReferenceRate =
+        nextMethodSupportsReference && referencedPurchaseItem
+          ? getPurchaseItemRateForUnit(referencedPurchaseItem, resolvedNextUnit as MeasurementUnit | undefined, units)
+          : undefined;
+      const shouldAutofillName =
+        field === 'calculationMethodId' &&
+        selectedMethod &&
+        (!currentLine.name.trim() ||
+          currentLine.name === getRecipeCostLineDefaultName(currentLine.category) ||
+          currentLine.name === currentSelectedMethod?.methodName);
       const nextLine = standardizeRecipeCostLine(
         {
           ...currentLine,
           [field]: fieldValue,
+          name: shouldAutofillName ? selectedMethod.methodName : currentLine.name,
           calculationBasis: nextBasis,
+          calculationMethodId:
+            field === 'calculationMethodId'
+              ? String(value)
+              : selectedMethod?.id || currentLine.calculationMethodId,
           rate:
-            field === 'ingredientReferenceId' && referencedPurchaseItem
-              ? getPurchaseItemUnitCost(referencedPurchaseItem, units)
+            (field === 'ingredientReferenceId' || field === 'calculationMethodId' || field === 'unit') &&
+            typeof nextReferenceRate === 'number'
+                ? nextReferenceRate
               : field === 'rate'
                 ? Number(value)
                 : currentLine.rate,
           unit:
-            field === 'calculationBasis'
-              ? nextBasis === 'per-kg-input'
-                ? currentLine.category === 'labor'
-                  ? laborPerKgInputUnit
-                  : nextReferencedIngredient?.entryUnitId ||
-                    nextReferencedIngredient?.unit ||
-                    nextReferencedIngredient?.baseUnitId ||
-                    referencedPurchaseItem?.baseUnitId ||
-                    referencedPurchaseItem?.issueUnit ||
-                    getDefaultCostLineUnit(nextBasis, yieldUnitId)
-                : getDefaultCostLineUnit(nextBasis, yieldUnitId)
-              : field === 'ingredientReferenceId' && nextBasis === 'per-kg-input'
-                ? currentLine.category === 'labor'
-                  ? laborPerKgInputUnit
-                  : nextReferencedIngredient?.entryUnitId ||
-                    nextReferencedIngredient?.unit ||
-                    nextReferencedIngredient?.baseUnitId ||
-                    referencedPurchaseItem?.baseUnitId ||
-                    referencedPurchaseItem?.issueUnit ||
-                    currentLine.unit
-              : field === 'unit'
-                ? String(value)
-                : currentLine.unit,
+            resolvedNextUnit,
           ingredientReferenceId: nextReferenceId,
         },
         effectiveYieldQuantity,
@@ -2594,6 +2908,7 @@ export function RecipeCosting({
         yieldUnitId,
         units,
         purchaseItems,
+        productionCostMethods,
       );
 
       const nextLines = [...current];
@@ -2640,27 +2955,14 @@ export function RecipeCosting({
     setDialogOpen(false);
     setSelectedDish(null);
     setViewMode(false);
-    setCommercialEditMode('price');
-    setTargetMarginPerYieldUnit(0);
+    setEvaluationMode('profit-per-unit');
+    setEvaluationValue(0);
     recipeDialogSourceSignatureRef.current = null;
     recipeDialogFormSignatureRef.current = null;
   };
 
   const toggleExpandedRow = (rowId: string) => {
     setExpandedRowId((current) => (current === rowId ? null : rowId));
-  };
-
-  const handleRecalculateDish = (dish: Dish, recipe?: Recipe) => {
-    if (!recipe) {
-      toast.error('Recipe is missing for this dish');
-      return;
-    }
-
-    const now = new Date();
-    const updatedDish = recostDishFromRecipe(dish, recipe, userName, now);
-    onDishesChange(dishes.map((entry) => (entry.id === dish.id ? updatedDish : entry)));
-    onMenuPackagesChange(recostMenuPackagesForDish(menuPackages, updatedDish));
-    toast.success('Recipe costs recalculated');
   };
 
   const repairRecipeDishLinks = () => {
@@ -2812,12 +3114,34 @@ export function RecipeCosting({
       }
     }
 
-    for (const line of sourceRecipeCostLines) {
-      const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
+    if (utilityCostEnabled && utilityCostLines.length === 0) {
+      toast.error('Add at least one utility cost line or uncheck Utility Costs');
+      return false;
+    }
+
+    if (packagingCostEnabled && packagingCostLines.length === 0) {
+      toast.error('Add at least one packaging cost line or uncheck Packaging Costs');
+      return false;
+    }
+
+    if (otherProductionCostEnabled && otherProductionCostLines.length === 0) {
+      toast.error('Add at least one other production cost line or uncheck Other Production Costs');
+      return false;
+    }
+
+    for (const line of activeSourceRecipeCostLines) {
+      const selectedMethod = resolveProductionCostMethodFromLine(line, productionCostMethods);
+      const calculationBasis = (selectedMethod?.calculationType ||
+        normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLineBasis;
       const costLineLabel = getRecipeCostLineCategoryLabel(line.category);
 
       if (!line.name.trim()) {
         toast.error(`${costLineLabel} cost name is required`);
+        return false;
+      }
+
+      if (!selectedMethod || selectedMethod.id.startsWith('legacy-')) {
+        toast.error(`${costLineLabel} calculation method is required`);
         return false;
       }
 
@@ -2826,22 +3150,37 @@ export function RecipeCosting({
         return false;
       }
 
-      if (calculationBasis === 'item-usage' && line.category !== 'labor' && !line.ingredientReferenceId) {
-        toast.error(`${costLineLabel} item usage must link to a purchase / stock item`);
+      if (selectedMethod.inputRequired.includes('amount') && line.rate <= 0) {
+        toast.error(`${costLineLabel} amount must be greater than 0`);
         return false;
       }
 
-      if (calculationBasis === 'per-kg-input' && line.category !== 'labor') {
-        const referencedIngredient = findReferencedIngredient(line, pricedRecipeIngredients, purchaseItems);
+      if (selectedMethod.inputRequired.includes('rate') && line.rate <= 0) {
+        toast.error(`${costLineLabel} rate must be greater than 0`);
+        return false;
+      }
 
-        if (!line.ingredientReferenceId || !referencedIngredient) {
-          toast.error(`Item reference must match an Ingredients/BOM line for Per KG Input ${costLineLabel.toLowerCase()} costs`);
+      if (selectedMethod.inputRequired.includes('quantity') && (!line.quantity || line.quantity <= 0)) {
+        toast.error(`${costLineLabel} quantity must be greater than 0`);
+        return false;
+      }
+
+      if (selectedMethod.inputRequired.includes('recipe-yield') && effectiveYieldQuantity <= 0) {
+        toast.error(`${costLineLabel} requires a valid recipe yield`);
+        return false;
+      }
+
+      if (shouldShowRecipeCostReference(line, productionCostMethods)) {
+        const referencedPurchaseItem = findReferencedPurchaseItem(line, pricedRecipeIngredients, purchaseItems);
+
+        if (!line.ingredientReferenceId || !referencedPurchaseItem) {
+          toast.error(`${costLineLabel} purchase item reference is required`);
           return false;
         }
       }
 
-      if (['item-usage', 'per-hour', 'per-person', 'per-head', 'per-daig'].includes(calculationBasis) && (!line.quantity || line.quantity <= 0)) {
-        toast.error('Quantity must be greater than 0 for item usage, hour, person, head, or daig based costs');
+      if (calculationBasis === 'item-usage' && !line.ingredientReferenceId) {
+        toast.error(`${costLineLabel} legacy item usage must link to a purchase / stock item`);
         return false;
       }
     }
@@ -2907,8 +3246,16 @@ export function RecipeCosting({
             costPerUnit: syncedIngredient.unitCost ?? syncedIngredient.costPerUnit,
           };
         }), purchaseItems);
-    const normalizedCostLines = sourceRecipeCostLines.map((line) =>
-      standardizeRecipeCostLine(line, effectiveYieldQuantity, standardRecipeIngredients, persistedYieldUnitId, units, purchaseItems),
+    const normalizedCostLines = activeSourceRecipeCostLines.map((line) =>
+      standardizeRecipeCostLine(
+        line,
+        effectiveYieldQuantity,
+        standardRecipeIngredients,
+        persistedYieldUnitId,
+        units,
+        purchaseItems,
+        productionCostMethods,
+      ),
     );
     const computedMarginPerYieldUnit = standardMetrics.marginPerYieldUnit;
 
@@ -2939,6 +3286,9 @@ export function RecipeCosting({
       wastageCost: standardWastageCost,
       laborCost: sourceLaborCost,
       utilitiesCost: sourceUtilitiesCost,
+      utilityCostEnabled,
+      packagingCostEnabled,
+      otherProductionCostEnabled,
       additionalCost: sourceAdditionalCost,
       additionalCostLines: normalizedCostLines,
       totalRecipeCost: totalRecipeCost,
@@ -2949,6 +3299,8 @@ export function RecipeCosting({
       supplyMarginPerYieldUnit: computedMarginPerYieldUnit,
       supplySellingPricePerYieldUnit: resolvedSellingPricePerYieldUnit,
       supplyFoodCostPercentage: foodCostPercentage,
+      pricingEvaluationMode: evaluationMode,
+      pricingEvaluationValue: evaluationValue,
       suggestedSellingPrice: resolvedSellingPricePerYieldUnit,
       foodCostPercentage,
       createdBy: existingRecipe?.createdBy || userName,
@@ -2981,89 +3333,31 @@ export function RecipeCosting({
   };
 
   const renderCostLineQuantityControl = (line: RecipeCostLine) => {
-    const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
-    const effectiveCostYield = effectiveYieldQuantity;
+    const selectedMethod = resolveProductionCostMethodFromLine(line, productionCostMethods);
+    const calculationBasis = (selectedMethod?.calculationType ||
+      normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLineBasis;
 
-  if (calculationBasis === 'fixed') {
-    return <span className="block text-right text-xs text-slate-400">-</span>;
-  }
-
-  if (calculationBasis === 'item-usage') {
-    return (
-      <input
-        type="number"
-        min="0.01"
-        step="0.01"
-        value={line.quantity || 1}
-        onChange={(event) => handleRecipeCostLineChange(line.id, 'quantity', Number(event.target.value))}
-        disabled={viewMode}
-        className={`${compactInputClass} text-right`}
-      />
-    );
-  }
-
-  if (calculationBasis === 'per-kg-output') {
+    if (!shouldProductionCostMethodShowQuantity(selectedMethod, calculationBasis)) {
       return (
         <div
-          className="flex h-7 items-center justify-end rounded border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700"
-          title="Auto from recipe output"
+          className={`${costLineStaticClass} justify-end font-medium`}
+          title="This method uses a default quantity of 1."
         >
-          {effectiveCostYield.toFixed(2)}
+          1
         </div>
-      );
-    }
-
-    if (calculationBasis === 'per-kg-input') {
-      if (line.category === 'labor') {
-        return (
-          <div
-            className="flex h-7 items-center justify-end rounded border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700"
-            title="Auto from total Ingredients/BOM input weight"
-          >
-            {getRecipeInputQuantityInKg(pricedRecipeIngredients, units).toFixed(2)}
-          </div>
-        );
-      }
-
-      const referencedIngredient = findReferencedIngredient(line, pricedRecipeIngredients, purchaseItems);
-      return (
-        <div
-          className="flex h-7 items-center justify-end rounded border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700"
-          title={
-            referencedIngredient
-              ? 'Auto from selected item quantity in Ingredients/BOM'
-              : 'Selected item is not in Ingredients/BOM. Use Fixed, Per Batch, or Per KG Output for catalog-only cost items.'
-          }
-        >
-          {getReferencedIngredientQuantity(line, pricedRecipeIngredients, purchaseItems).toFixed(2)}
-        </div>
-      );
-    }
-
-    if (calculationBasis === 'per-batch') {
-      return (
-        <input
-          type="number"
-          min="0.01"
-          step="0.01"
-          value={line.capacityQuantity || 12}
-          onChange={(event) => handleRecipeCostLineChange(line.id, 'capacityQuantity', Number(event.target.value))}
-          disabled={viewMode}
-          title={`${line.quantity || 1} batch(es) auto-calculated from yield`}
-          className={`${compactInputClass} text-right`}
-        />
       );
     }
 
     return (
       <input
         type="number"
-        min="0.01"
+        min="0"
         step="0.01"
-        value={line.quantity || 1}
+        value={typeof line.quantity === 'number' ? line.quantity : 1}
         onChange={(event) => handleRecipeCostLineChange(line.id, 'quantity', Number(event.target.value))}
         disabled={viewMode}
-        className={`${compactInputClass} text-right`}
+        className={`${costLineInputClass} text-right`}
+        title={selectedMethod ? getProductionCostMethodQuantityLabel(selectedMethod) : 'Quantity'}
       />
     );
   };
@@ -3074,63 +3368,50 @@ export function RecipeCosting({
     rows: RecipeCostLine[],
     total: number,
   ) => {
-    const showItemReference = shouldShowRecipeCostReference(category);
-    const emptyStateColSpan = showItemReference ? 8 : 7;
+    const showReferenceColumn = rows.some((line) => shouldShowRecipeCostReference(line, productionCostMethods));
+    const emptyStateColSpan = viewMode ? (showReferenceColumn ? 7 : 6) : showReferenceColumn ? 8 : 7;
 
     return (
       <section className="overflow-hidden rounded border border-slate-200 bg-white">
-        <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-700">{title}</div>
-          <div className="text-xs font-semibold text-slate-900">{formatCurrencyPKR(total)}</div>
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-2.5 py-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">{title}</div>
         </div>
-        <div className="overflow-x-auto">
-          <table className={`w-full table-fixed ${showItemReference ? 'min-w-[940px]' : 'min-w-[820px]'}`}>
+        <div className="overflow-auto">
+          <table className="w-full table-fixed">
           <thead className="bg-white">
             <tr className="border-b border-slate-200">
-              <th className={`${compactTableHeadClass} ${showItemReference ? 'w-[22%]' : 'w-[28%]'}`}>{getRecipeCostLineNameColumnLabel(category)}</th>
-              <th className={`${compactTableHeadClass} w-[15%]`}>Cost Basis</th>
-              <th className={`${compactTableHeadClass} w-[10%] text-right`}>Rate</th>
-              <th className={`${compactTableHeadClass} w-[12%] text-right`}>Quantity</th>
-              <th className={`${compactTableHeadClass} w-[9%]`}>Unit</th>
-              {showItemReference ? (
-                <th className={`${compactTableHeadClass} w-[18%]`}>Item Reference</th>
-              ) : null}
-              <th className={`${compactTableHeadClass} w-[10%] text-right`}>Total</th>
-              <th className={`${compactTableHeadClass} w-[4%] text-right`}>Action</th>
+              <th className={`${compactTableHeadClass} ${showReferenceColumn ? 'w-[24%]' : 'w-[29%]'}`}>{getRecipeCostLineNameColumnLabel(category)}</th>
+              <th className={`${compactTableHeadClass} ${showReferenceColumn ? 'w-[17%]' : 'w-[20%]'}`}>Calculation Method</th>
+              <th className={`${compactTableHeadClass} ${showReferenceColumn ? 'w-[10%]' : 'w-[11%]'} text-right`}>Rate / Amount</th>
+              <th className={`${compactTableHeadClass} w-[8%] text-right`}>Quantity</th>
+              <th className={`${compactTableHeadClass} w-[8%]`}>Unit</th>
+              {showReferenceColumn ? <th className={`${compactTableHeadClass} w-[23%]`}>Purchase Item</th> : null}
+              <th className={`${compactTableHeadClass} w-[8%] text-right`}>Total</th>
+              {!viewMode ? <th className={`${compactTableHeadClass} w-[2%] text-right`}>Action</th> : null}
             </tr>
           </thead>
           <tbody>
             {rows.map((line) => {
-              const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
-              const defaultUnit = getDefaultCostLineUnit(calculationBasis, yieldUnitId);
-              const referencedIngredient = findReferencedIngredient(line, standardRecipeIngredients, purchaseItems);
+              const selectedMethod = resolveProductionCostMethodFromLine(line, productionCostMethods);
+              const calculationBasis = (selectedMethod?.calculationType ||
+                normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLineBasis;
+              const defaultUnit = getDefaultCostLineUnit(line, yieldUnitId, productionCostMethods);
               const referencedPurchaseItem = findReferencedPurchaseItem(line, standardRecipeIngredients, purchaseItems);
-              const ingredientUnit =
-                referencedIngredient?.entryUnitId ||
-                referencedIngredient?.unit ||
-                referencedIngredient?.baseUnitId ||
-                referencedPurchaseItem?.baseUnitId ||
-                referencedPurchaseItem?.issueUnit ||
-                line.unit ||
-                laborPerKgInputUnit;
               const referenceOptions = getRecipeCostReferenceOptions(line.ingredientReferenceId);
-              const rowBasisOptions = getRecipeCostLineBasisOptions(category, calculationBasis);
-              const unitValue =
-                calculationBasis === 'fixed'
-                  ? ''
-                  : calculationBasis === 'item-usage'
-                    ? referencedPurchaseItem?.baseUnitId ||
-                      referencedPurchaseItem?.issueUnit ||
-                      referencedIngredient?.baseUnitId ||
-                      referencedIngredient?.unit ||
-                      referencedIngredient?.entryUnitId ||
-                      line.unit ||
-                      ''
-                  : calculationBasis === 'per-kg-input'
-                    ? category === 'labor'
-                      ? laborPerKgInputUnit
-                      : ingredientUnit
-                    : line.unit || defaultUnit;
+              const rowMethodOptions = getProductionCostMethodOptionsForCategory(
+                productionCostMethods,
+                category,
+                line,
+              );
+              const showLineReference = shouldShowRecipeCostReference(line, productionCostMethods);
+              const unitOptions = getRecipeCostLineUnitOptions(
+                line,
+                showLineReference ? referencedPurchaseItem : undefined,
+                units,
+                ((showLineReference && referencedPurchaseItem
+                  ? referencedPurchaseItem.purchaseUnitId || referencedPurchaseItem.purchaseUnit || getBaseUnit(referencedPurchaseItem)
+                  : defaultUnit) || '') as MeasurementUnit | undefined,
+              );
 
               return (
                 <tr
@@ -3143,97 +3424,115 @@ export function RecipeCosting({
                   onDragOver={(event: DragEvent<HTMLTableRowElement>) => {
                     if (!viewMode && draggedCostLineId) {
                       event.preventDefault();
-                      event.dataTransfer.dropEffect = 'move';
-                    }
-                  }}
-                  onDrop={() => handleCostLineDrop(line.id, category)}
-                  onDragEnd={() => setDraggedCostLineId(null)}
-                  className={`border-b border-slate-100 last:border-b-0 ${draggedCostLineId === line.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
-                >
-                  <td className={compactTableCellClass}>
+                    event.dataTransfer.dropEffect = 'move';
+                  }
+                }}
+                onDrop={() => handleCostLineDrop(line.id, category)}
+                onDragEnd={() => setDraggedCostLineId(null)}
+                className={`border-b border-slate-100 last:border-b-0 ${draggedCostLineId === line.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+              >
+                  <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">
                     <div className="flex items-center gap-1">
-                      <GripVertical className="size-3.5 shrink-0 text-slate-400" />
+                      <GripVertical className="size-3 shrink-0 text-slate-400" />
                       <input
                         type="text"
                         value={line.name}
                         onChange={(event) => handleRecipeCostLineChange(line.id, 'name', event.target.value)}
                         disabled={viewMode}
-                        className={compactInputClass}
+                        className={costLineInputClass}
                         placeholder={getRecipeCostLinePlaceholder(category)}
                       />
                     </div>
                   </td>
-                  <td className={compactTableCellClass}>
+                  <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">
                     <select
-                      value={calculationBasis}
+                      value={selectedMethod?.id || ''}
                       onChange={(event) =>
-                        handleRecipeCostLineChange(line.id, 'calculationBasis', event.target.value as RecipeCostLineBasis)
+                        handleRecipeCostLineChange(line.id, 'calculationMethodId', event.target.value)
                       }
                       disabled={viewMode}
-                      className={compactInputClass}
+                      className={costLineInputClass}
                     >
-                      {rowBasisOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
+                      <option value="">Select method</option>
+                      {rowMethodOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.methodName}
                         </option>
                       ))}
                     </select>
                   </td>
-                  <td className={compactTableCellClass}>
+                  <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">
                     <input
                       type="number"
                       min="0"
                       step="0.01"
                       value={line.rate}
                       onChange={(event) => handleRecipeCostLineChange(line.id, 'rate', Number(event.target.value))}
-                      disabled={viewMode || (calculationBasis === 'item-usage' && Boolean(line.ingredientReferenceId))}
-                      className={`${compactInputClass} text-right`}
+                      disabled={viewMode || (showLineReference && Boolean(line.ingredientReferenceId))}
+                      className={`${costLineInputClass} text-right`}
+                      title={selectedMethod ? getProductionCostMethodRateLabel(selectedMethod) : 'Rate / Amount'}
                     />
                   </td>
-                  <td className={compactTableCellClass}>{renderCostLineQuantityControl(line)}</td>
-                  <td className={compactTableCellClass}>
-                    <input
-                      type="text"
-                      value={unitValue}
-                      onChange={(event) => handleRecipeCostLineChange(line.id, 'unit', event.target.value)}
-                      disabled={viewMode || ['fixed', 'item-usage', 'per-kg-output', 'per-kg-input'].includes(calculationBasis)}
-                      className={compactInputClass}
-                    />
-                  </td>
-                  {showItemReference ? (
-                    <td className={compactTableCellClass}>
-                      <select
-                        value={line.ingredientReferenceId || ''}
-                        onChange={(event) => handleRecipeCostLineChange(line.id, 'ingredientReferenceId', event.target.value)}
-                        disabled={viewMode}
-                        className={compactInputClass}
+                  <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">{renderCostLineQuantityControl(line)}</td>
+                  <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">
+                    {calculationBasis === 'fixed' || calculationBasis === 'per-event' ? (
+                      <div
+                        className={costLineStaticClass}
+                        title="This method does not require a unit."
                       >
-                        <option value="">Select purchase / stock item</option>
-                        {referenceOptions.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.itemName} | {formatIngredientCategoryLabel(getIngredientCategoryKey(item))}
+                        -
+                      </div>
+                    ) : (
+                      <select
+                        value={line.unit || ''}
+                        onChange={(event) => handleRecipeCostLineChange(line.id, 'unit', event.target.value)}
+                        disabled={viewMode}
+                        className={costLineInputClass}
+                        title={selectedMethod ? `Unit options for ${selectedMethod.methodName}` : 'Select unit'}
+                      >
+                        <option value="">Select unit</option>
+                        {unitOptions.map((option) => (
+                          <option key={option.code} value={option.code}>
+                            {formatUnitOptionLabel(option)}
                           </option>
                         ))}
                       </select>
+                    )}
+                  </td>
+                  {showReferenceColumn ? (
+                    <td className="px-2 py-0.5 text-xs text-slate-700 align-middle">
+                      {showLineReference ? (
+                        <select
+                          value={line.ingredientReferenceId || ''}
+                          onChange={(event) => handleRecipeCostLineChange(line.id, 'ingredientReferenceId', event.target.value)}
+                          disabled={viewMode}
+                          className={costLineInputClass}
+                        >
+                          <option value="">Select purchase item</option>
+                          {referenceOptions.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.itemName} | {formatIngredientCategoryLabel(getIngredientCategoryKey(item))}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
                     </td>
                   ) : null}
-                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>
+                  <td className="px-2 py-0.5 text-right text-[11px] font-semibold text-slate-900 align-middle">
                     {formatCurrencyPKR(line.totalCost || 0)}
                   </td>
-                  <td className={`${compactTableCellClass} text-right`}>
-                    {!viewMode ? (
+                  {!viewMode ? (
+                    <td className="px-1 py-0.5 text-right text-xs text-slate-700 align-middle">
                       <button
                         type="button"
                         onClick={() => handleRemoveRecipeCostLine(line.id)}
                         title={`Remove ${getRecipeCostLineCategoryLabel(category).toLowerCase()} cost`}
-                        className="inline-flex size-7 items-center justify-center rounded text-slate-500 hover:bg-red-50 hover:text-red-700"
+                        className="inline-flex size-6 items-center justify-center rounded text-slate-500 hover:bg-red-50 hover:text-red-700"
                       >
-                        <Trash2 className="size-3.5" />
+                        <Trash2 className="size-3" />
                       </button>
-                    ) : (
-                      <span className="text-slate-400">-</span>
-                    )}
-                  </td>
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -3247,10 +3546,6 @@ export function RecipeCosting({
           </tbody>
         </table>
       </div>
-      <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
-        <span className="font-medium text-slate-600">{title} Total</span>
-        <span className="min-w-[120px] text-right font-semibold text-slate-900">{formatCurrencyPKR(total)}</span>
-      </div>
       </section>
     );
   };
@@ -3259,7 +3554,7 @@ export function RecipeCosting({
     <div className="flex h-full flex-col bg-slate-50">
       <div className="border-b border-slate-200 bg-white">
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-          <h2 className="mr-2 text-base font-semibold text-slate-900">Banquet Menu Costing Control</h2>
+          <h2 className="mr-2 text-base font-semibold text-slate-900">Recipe Costing Control</h2>
           <div className="relative min-w-[260px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -3344,20 +3639,6 @@ export function RecipeCosting({
                 </option>
               ))}
             </select>
-            <select value={foodCostBandFilter} onChange={(event) => setFoodCostBandFilter(event.target.value as FoodCostBandFilter)} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700">
-              {foodCostBandOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <select value={marginFilter} onChange={(event) => setMarginFilter(event.target.value as MarginFilter)} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700">
-              {marginFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
             <select value={missingConfigFilter} onChange={(event) => setMissingConfigFilter(event.target.value as MissingConfigFilter)} className="h-8 rounded border border-slate-300 bg-white px-2 text-xs text-slate-700">
               {missingConfigOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -3375,24 +3656,20 @@ export function RecipeCosting({
           </div>
         </div>
 
-        <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-600">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <button type="button" onClick={() => resetRegisterFilters()} className="font-semibold text-slate-900">Total Menu Items: {registerMetrics.totalMenuItems}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ productionTypeFilter: 'recipe-based' })} className="font-semibold text-slate-900">Recipe Based: {registerMetrics.recipeBasedCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ productionTypeFilter: 'purchased-ready' })} className="font-semibold text-slate-900">Purchased Ready: {registerMetrics.purchasedReadyCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ productionTypeFilter: 'service-item' })} className="font-semibold text-slate-900">Service Items: {registerMetrics.serviceItemCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ recipePresenceFilter: 'with-recipe' })} className="font-semibold text-slate-900">With Recipe: {registerMetrics.withRecipeCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ recipeStateFilter: 'missing-recipe' })} className={`font-semibold ${registerMetrics.withoutRecipeCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Without Recipe: {registerMetrics.withoutRecipeCount}</button>
-            <span><strong className="text-slate-900">Active Recipes:</strong> {registerMetrics.activeRecipesCount}</span>
-            <span><strong className="text-slate-900">Inactive Recipes:</strong> {registerMetrics.inactiveRecipesCount}</span>
-            <span><strong className="text-slate-900">Avg Food Cost %:</strong> {registerMetrics.avgFoodCost.toFixed(2)}%</span>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ foodCostBandFilter: 'above-50' })} className={`font-semibold ${registerMetrics.highFoodCostCount > 0 ? 'text-amber-700 hover:underline' : 'text-slate-900'}`}>High Food Cost: {registerMetrics.highFoodCostCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ costingStatusFilter: 'zero-margin' })} className={`font-semibold ${registerMetrics.zeroMarginCount > 0 ? 'text-slate-700 hover:underline' : 'text-slate-900'}`}>Zero Margin: {registerMetrics.zeroMarginCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ costingStatusFilter: 'loss-making' })} className={`font-semibold ${registerMetrics.lossMakingCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Loss Making: {registerMetrics.lossMakingCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-supply-price' })} className={`font-semibold ${registerMetrics.missingSupplyPriceCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Missing Supply Price: {registerMetrics.missingSupplyPriceCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-ingredients' })} className={`font-semibold ${registerMetrics.missingIngredientCostCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Missing Ingredient Cost: {registerMetrics.missingIngredientCostCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-labor-or-utility' })} className={`font-semibold ${registerMetrics.missingLaborUtilityCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Missing Labor / Utility: {registerMetrics.missingLaborUtilityCount}</button>
-            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-cost-link' })} className={`font-semibold ${registerMetrics.missingCostLinkCount > 0 ? 'text-red-700 hover:underline' : 'text-slate-900'}`}>Missing Cost Link: {registerMetrics.missingCostLinkCount}</button>
+        <div className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button type="button" onClick={() => resetRegisterFilters()} className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2 font-semibold text-slate-900">Recipes {registerMetrics.totalRecipes}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ productionTypeFilter: 'recipe-based' })} className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2 font-semibold text-slate-900">Recipe Based {registerMetrics.recipeBasedCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ productionTypeFilter: 'purchased-ready' })} className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2 font-semibold text-slate-900">Purchased Ready {registerMetrics.purchasedReadyCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ recipeStateFilter: 'missing-recipe' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.withoutRecipeCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Without Recipe {registerMetrics.withoutRecipeCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ costingStatusFilter: 'complete' })} className="inline-flex h-6 items-center rounded border border-emerald-200 bg-emerald-50 px-2 font-semibold text-emerald-700">Complete {registerMetrics.completeRecipesCount}</button>
+            <span className="inline-flex h-6 items-center rounded border border-amber-200 bg-amber-50 px-2 font-semibold text-amber-800">Incomplete {registerMetrics.incompleteRecipesCount}</span>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-labor' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingLaborCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Labor {registerMetrics.missingLaborCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-utility' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingUtilityCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Utility {registerMetrics.missingUtilityCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-packaging' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingPackagingCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Packaging {registerMetrics.missingPackagingCount}</button>
+            <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-purchase-rate' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingPurchaseRateCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Purchase Rate {registerMetrics.missingPurchaseRateCount}</button>
+            <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2">Avg / Unit {formatCurrencyPKR(registerMetrics.averageCostPerUnit)}</span>
+            <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2">Updated 7d {registerMetrics.recentlyUpdatedCount}</span>
           </div>
         </div>
 
@@ -3419,90 +3696,104 @@ export function RecipeCosting({
           <div className="flex h-full items-center justify-center rounded border border-dashed border-slate-300 bg-white px-6 text-center">
             <div>
               <FileText className="mx-auto mb-3 size-10 text-slate-300" />
-              <p className="text-sm font-medium text-slate-700">No costing rows found</p>
-              <p className="mt-1 text-xs text-slate-500">Adjust the costing filters to see banquet menu items.</p>
+              <p className="text-sm font-medium text-slate-700">No recipe cost rows found</p>
+              <p className="mt-1 text-xs text-slate-500">Adjust the recipe filters to see banquet kitchen recipes.</p>
             </div>
           </div>
         ) : (
           <div className="overflow-hidden rounded border border-slate-200 bg-white">
             <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-              <h3 className="text-sm font-semibold text-slate-900">Menu Costing Register</h3>
+              <h3 className="text-sm font-semibold text-slate-900">Recipe Cost Register</h3>
               <span className="text-xs text-slate-500">{filteredRows.length} rows</span>
             </div>
             <div className="overflow-auto">
               <table className="w-full">
                 <thead className="sticky top-0 bg-slate-50">
                   <tr>
-                    <th className={tableHeadClass}>Dish</th>
-                    <th className={tableHeadClass}>Production Type</th>
-                    <th className={tableHeadClass}>Recipe Type</th>
-                    <th className={tableHeadClass}>Output / Linked Item</th>
-                    <th className={tableHeadClass}>Standard Yield</th>
-                    <th className={`${tableHeadClass} text-right`}>Standard Dish Cost</th>
-                    <th className={`${tableHeadClass} text-right`}>Standard Cost / Unit</th>
-                    <th className={`${tableHeadClass} text-right`}>Selling Price</th>
+                    <th className={tableHeadClass}>Recipe</th>
+                    <th className={tableHeadClass}>Section / Type</th>
+                    <th className={tableHeadClass}>Yield</th>
+                    <th className={`${tableHeadClass} text-right`}>Ingredient Cost</th>
+                    <th className={`${tableHeadClass} text-right`}>Add-ons</th>
+                    <th className={`${tableHeadClass} text-right`}>Total Recipe Cost</th>
+                    <th className={`${tableHeadClass} text-right`}>Cost / Output Unit</th>
                     <th className={`${tableHeadClass} text-right`}>Margin</th>
-                    <th className={`${tableHeadClass} text-right`}>Food Cost %</th>
-                    <th className={`${tableHeadClass} text-right`}>Margin %</th>
-                    <th className={tableHeadClass}>Costing Status</th>
-                    <th className={tableHeadClass}>Recipe Status</th>
-                    <th className={`${tableHeadClass} text-right`}>Action</th>
+                    <th className={`${tableHeadClass} text-right`}>Selling Price</th>
+                    <th className={tableHeadClass}>Recipe Validation</th>
+                    <th className={tableHeadClass}>Missing Data</th>
+                    <th className={`${tableHeadClass} text-right`}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredRows.map((row) => {
-                    const standardYieldText =
-                      row.productionType === 'recipe-based' && row.standardYieldQuantity > 0
-                        ? `${row.standardYieldQuantity} ${row.standardYieldUnit || row.costUnit}`
-                        : '-';
+                    const standardYieldText = row.standardYieldQuantity > 0
+                      ? `${row.standardYieldQuantity} ${row.standardYieldUnit || row.costUnit}`
+                      : '-';
                     const costPerUnitText =
-                      row.costPerUnit > 0 ? `${formatCurrencyPKR(row.costPerUnit)} / ${formatSalesUnitLabel(row.costUnit)}` : '-';
-                    const sellingPriceText =
-                      row.supplyPricePerUnit > 0 ? `${formatCurrencyPKR(row.supplyPricePerUnit)} / ${formatSalesUnitLabel(row.costUnit)}` : 'Missing';
-                    const marginText =
-                      row.supplyPricePerUnit > 0 || row.marginPerUnit !== 0
-                        ? `${formatCurrencyPKR(row.marginPerUnit)} / ${formatSalesUnitLabel(row.costUnit)}`
-                        : '-';
-                    const marginPercentageText =
-                      row.supplyPricePerUnit > 0 ? `${row.marginPercentage.toFixed(2)}%` : 'Missing';
+                      row.costPerUnit > 0 ? formatPerOutputUnitValue(row.costPerUnit, row.costUnit) : '-';
+                    const marginPerUnitText = row.recipe ? formatPerOutputUnitValue(row.marginPerOutputUnit, row.costUnit) : '-';
+                    const sellingPricePerUnitText = row.recipe ? formatPerOutputUnitValue(row.sellingPricePerOutputUnit, row.costUnit) : '-';
+                    const missingDataBadges = getRecipeMissingDataBadges(row);
 
                     return (
                       <Fragment key={row.id}>
                         <tr className="cursor-pointer border-t border-slate-200 hover:bg-slate-50" onClick={() => toggleExpandedRow(row.id)}>
                           <td className={tableCellClass}>
                             <div className="font-medium text-slate-900">{row.dish.dishName}</div>
-                            <div className="text-xs text-slate-500">
-                              {row.dish.cuisineName} | {String(row.dish.kitchenStationId || row.dish.preparationArea || '-').replace(/-/g, ' ')}
+                            <div className="text-[11px] text-slate-500">{row.recipeCode}</div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                              <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${getRecipeStateBadgeClass(row.recipeState)}`}>
+                                {getRecipeStateLabel(row.recipeState)}
+                              </span>
+                              <span className="text-[10px] text-slate-500">{row.recipeType}</span>
                             </div>
                           </td>
                           <td className={tableCellClass}>
-                            <span className="inline-flex rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">{row.productionTypeLabel}</span>
+                            <div className="font-medium text-slate-900">{row.dish.cuisineName || '-'}</div>
+                            <div className="text-[11px] text-slate-500">
+                              {String(row.dish.kitchenStationId || row.dish.preparationArea || '-').replace(/-/g, ' ')}
+                            </div>
+                            <div className="mt-0.5">
+                              <span className="inline-flex rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">{row.productionTypeLabel}</span>
+                            </div>
                           </td>
-                          <td className={tableCellClass}>{row.recipeType}</td>
                           <td className={tableCellClass}>
-                            <div className="font-medium text-slate-900">{row.outputOrLinkedItem}</div>
-                            <div className="text-xs text-slate-500">{formatSalesUnitLabel(row.costUnit)}</div>
+                            <div className="font-medium text-slate-900">{standardYieldText}</div>
+                            <div className="text-[11px] text-slate-500">{row.outputOrLinkedItem}</div>
                           </td>
-                          <td className={tableCellClass}>{standardYieldText}</td>
-                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>
-                            {row.productionType === 'recipe-based' ? formatCurrencyPKR(row.standardDishCost) : '-'}
+                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{formatCurrencyPKR(row.ingredientCost)}</td>
+                          <td className={`${tableCellClass} text-right`}>
+                            <div className="font-medium text-slate-900">{formatCurrencyPKR(row.laborCost + row.utilityCost + row.packagingCost + row.otherProductionCost)}</div>
+                            <div className="text-[10px] text-slate-500">
+                              L {formatCurrencyPKR(row.laborCost)} | U {formatCurrencyPKR(row.utilityCost)} | P {formatCurrencyPKR(row.packagingCost)}
+                            </div>
                           </td>
+                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{formatCurrencyPKR(row.standardDishCost)}</td>
                           <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{costPerUnitText}</td>
-                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{sellingPriceText}</td>
-                          <td className={`${tableCellClass} text-right font-medium ${row.marginPerUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{marginText}</td>
-                          <td className={`${tableCellClass} text-right font-medium ${row.foodCostPercentage > COSTING_FOOD_COST_THRESHOLD ? 'text-amber-700' : 'text-slate-900'}`}>
-                            {row.supplyPricePerUnit > 0 ? `${row.foodCostPercentage.toFixed(2)}%` : 'Missing'}
-                          </td>
-                          <td className={`${tableCellClass} text-right font-medium ${row.marginPerUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{marginPercentageText}</td>
+                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{marginPerUnitText}</td>
+                          <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{sellingPricePerUnitText}</td>
                           <td className={tableCellClass}>
                             <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${getCostingStatusBadgeClass(row.costingStatus)}`}>
                               {getCostingStatusLabel(row.costingStatus)}
                             </span>
                           </td>
                           <td className={tableCellClass}>
-                            <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${getRecipeStateBadgeClass(row.recipeState)}`}>
-                              {getRecipeStateLabel(row.recipeState)}
-                            </span>
+                            {missingDataBadges.length > 0 ? (
+                              <div className="flex max-w-[180px] flex-wrap gap-1">
+                                {missingDataBadges.slice(0, 2).map((badge) => (
+                                  <span key={badge} className="rounded bg-red-100 px-2 py-0.5 text-[11px] text-red-700">
+                                    {badge}
+                                  </span>
+                                ))}
+                                {missingDataBadges.length > 2 ? (
+                                  <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                                    +{missingDataBadges.length - 2}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-500">-</span>
+                            )}
                           </td>
                           <td className={`${tableCellClass} text-right`}>
                             <div className="inline-flex items-center gap-1">
@@ -3564,69 +3855,66 @@ export function RecipeCosting({
                                   {row.recipe ? <Edit2 className="size-3.5" /> : <Plus className="size-3.5" />}
                                 </button>
                               ) : null}
-                              {row.productionType === 'recipe-based' && row.recipe ? (
-                                <button
-                                  type="button"
-                                  title="Recalculate dish cost"
-                                  aria-label="Recalculate dish cost"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleRecalculateDish(row.dish, row.recipe);
-                                  }}
-                                  className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-300 text-slate-700 hover:bg-slate-50"
-                                >
-                                  <RefreshCw className="size-3.5" />
-                                </button>
-                              ) : null}
                             </div>
                           </td>
                         </tr>
                         {expandedRowId === row.id ? (
                           <tr className="border-t border-slate-100 bg-slate-50/60">
-                            <td className="px-3 py-3" colSpan={14}>
+                            <td className="px-3 py-3" colSpan={12}>
                               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Ingredient Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.ingredientCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.ingredientCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Labor Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.laborCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.laborCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Utility Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.utilityCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.utilityCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Packaging / Consumable Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.packagingCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.packagingCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Other Production Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.otherProductionCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.otherProductionCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Wastage Cost</div>
-                                  <div className="font-semibold text-slate-900">{row.productionType === 'recipe-based' ? formatCurrencyPKR(row.wastageCost) : '-'}</div>
+                                  <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.wastageCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Standard Dish Cost</div>
+                                  <div className="text-xs text-slate-500">Total Recipe Cost</div>
                                   <div className="font-semibold text-slate-900">
-                                    {row.productionType === 'recipe-based' ? formatCurrencyPKR(row.standardDishCost) : row.costPerUnit > 0 ? formatCurrencyPKR(row.costPerUnit) : 'Missing'}
+                                    {formatCurrencyPKR(row.standardDishCost)}
                                   </div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
                                   <div className="text-xs text-slate-500">Standard Yield</div>
                                   <div className="font-semibold text-slate-900">
-                                    {row.productionType === 'recipe-based' ? `${row.standardYieldQuantity} ${row.standardYieldUnit || row.costUnit}` : '-'}
+                                    {standardYieldText}
                                   </div>
+                                </div>
+                                <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+                                  <div className="text-xs text-slate-500">Margin</div>
+                                  <div className="font-semibold text-slate-900">{marginPerUnitText}</div>
+                                </div>
+                                <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
+                                  <div className="text-xs text-slate-500">Selling Price</div>
+                                  <div className="font-semibold text-slate-900">{sellingPricePerUnitText}</div>
                                 </div>
                               </div>
                               <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
-                                {row.missingIngredients ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing ingredients</span> : null}
+                                {row.missingIngredientCost ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing ingredient cost</span> : null}
+                                {row.missingPurchaseRate ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing purchase rate</span> : null}
                                 {row.missingLabor ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing labor cost</span> : null}
                                 {row.missingUtility ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing utility cost</span> : null}
-                                {row.missingSupplyPrice ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing supply price</span> : null}
+                                {row.missingPackaging ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing packaging cost</span> : null}
+                                {row.unitConversionMissing ? <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">Unit conversion missing</span> : null}
+                                {row.missingYield ? <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">Yield missing</span> : null}
                                 {row.missingCostLink ? <span className="rounded bg-red-100 px-2 py-0.5 text-red-700">Missing linked cost source</span> : null}
                                 {row.missingCategory ? <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">Missing category</span> : null}
                                 {row.missingKitchenSection ? <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-700">Missing kitchen section</span> : null}
@@ -3663,151 +3951,42 @@ export function RecipeCosting({
               <div className="space-y-3">
                 <section className="rounded border border-slate-200 bg-white">
                   <div className={sectionTitleClass}>Cost Summary</div>
-                  {isPurchasedReadyDialog ? (
-                    <div className="grid gap-px bg-slate-200 md:grid-cols-3 xl:grid-cols-[minmax(220px,1.4fr)_0.75fr_0.8fr_minmax(230px,1.25fr)_0.75fr_0.7fr]">
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Purchase Item</div>
-                        <div className="truncate font-semibold text-slate-900">{selectedLinkedPurchaseItem?.itemName || 'Not linked'}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {formatCurrencyPKR(selectedPurchasedReadyUnitCost)} / {selectedPurchaseCostUnitLabel}
-                        </div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Add-ons</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(additionalCost + wastageCost)}</div>
-                        <div className="truncate text-[11px] text-slate-500">{productionCostSummaryText}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Final Cost / {yieldUnitLabel}</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
-                        <div className="text-[11px] text-slate-500">{standardYieldSummary}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                            {commercialEditMode === 'price' ? 'Selling Price' : 'Target Margin'} / {yieldUnitLabel}
-                          </div>
-                          {!viewMode ? (
-                            <div className="inline-flex rounded border border-slate-300 bg-slate-50 p-0.5 text-[10px] font-medium text-slate-700">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setCommercialEditMode('margin');
-                                  setTargetMarginPerYieldUnit(marginPerYieldUnit);
-                                }}
-                                className={`h-5 rounded px-1.5 ${commercialEditMode === 'margin' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-                              >
-                                Margin
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setCommercialEditMode('price');
-                                  setSellingPricePerYieldUnit(supplySellingPricePerYieldUnit);
-                                }}
-                                className={`h-5 rounded px-1.5 ${commercialEditMode === 'price' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-                              >
-                                Price
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                        {viewMode ? (
-                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
-                        ) : commercialEditMode === 'price' ? (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={sellingPricePerYieldUnit}
-                            onChange={(event) => {
-                              const nextValue = Number(event.target.value);
-                              setSellingPricePerYieldUnit(nextValue);
-                              setTargetMarginPerYieldUnit(nextValue - costPerYieldUnit);
-                            }}
-                            className={`${compactInputClass} mt-1 text-right`}
-                          />
-                        ) : (
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={targetMarginPerYieldUnit}
-                            onChange={(event) => {
-                              const nextMargin = Number(event.target.value);
-                              setTargetMarginPerYieldUnit(nextMargin);
-                              setSellingPricePerYieldUnit(costPerYieldUnit + nextMargin);
-                            }}
-                            className={`${compactInputClass} mt-1 text-right`}
-                          />
-                        )}
-                        {!viewMode ? (
-                          <div className="mt-1 text-[11px] text-slate-500">Selling: {formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
-                        ) : null}
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Margin / {yieldUnitLabel}</div>
-                        <div className={`font-semibold ${marginPerYieldUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{formatCurrencyPKR(marginPerYieldUnit)}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {Number.isFinite(marginPercentage) ? `${marginPercentage.toFixed(2)}%` : '0.00%'}
-                        </div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Food Cost</div>
-                        <div className="font-semibold text-slate-900">
-                          {Number.isFinite(foodCostPercentage) ? `${foodCostPercentage.toFixed(2)}%` : '0.00%'}
-                        </div>
-                        <div className="text-[11px] text-slate-500">Total {formatCurrencyPKR(sellingPriceTotal)}</div>
+                  <div className="grid gap-px bg-slate-200 md:grid-cols-3 xl:grid-cols-6">
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{ingredientSummaryLabel}</div>
+                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalIngredientCost)}</div>
+                      <div className="truncate text-[11px] text-slate-500">
+                        {isPurchasedReadyDialog ? (selectedLinkedPurchaseItem?.itemName || 'Not linked') : `${standardRecipeIngredients.length} lines`} | {standardYieldSummary}
                       </div>
                     </div>
-                  ) : (
-                    <div className="grid gap-px bg-slate-200 md:grid-cols-3 lg:grid-cols-[minmax(180px,1.15fr)_0.9fr_0.85fr_minmax(210px,1.15fr)_0.8fr_0.7fr]">
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Ingredient Cost</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalIngredientCost)}</div>
-                        <div className="truncate text-[11px] text-slate-500">{standardRecipeIngredients.length} lines | {standardYieldSummary}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Standard Cost</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalRecipeCost)}</div>
-                        <div className="text-[11px] text-slate-500">{formatCurrencyPKR(costPerYieldUnit)} / {yieldUnitLabel}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Add-ons</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(additionalCost + wastageCost)}</div>
-                        <div className="truncate text-[11px] text-slate-500">{productionCostSummaryText}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Selling Price / {yieldUnitLabel}</div>
-                        {viewMode ? (
-                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
-                        ) : (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={sellingPricePerYieldUnit}
-                            onChange={(event) => setSellingPricePerYieldUnit(Number(event.target.value))}
-                            className={`${compactInputClass} mt-1 text-right`}
-                          />
-                        )}
-                        <div className="text-[11px] text-slate-500">Total {formatCurrencyPKR(sellingPriceTotal)}</div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Margin / {yieldUnitLabel}</div>
-                        <div className={`font-semibold ${marginPerYieldUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{formatCurrencyPKR(marginPerYieldUnit)}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {Number.isFinite(marginPercentage) ? `${marginPercentage.toFixed(2)}%` : '0.00%'}
-                        </div>
-                      </div>
-                      <div className="bg-white px-2.5 py-2 text-sm">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Food Cost</div>
-                        <div className="font-semibold text-slate-900">
-                          {Number.isFinite(foodCostPercentage) ? `${foodCostPercentage.toFixed(2)}%` : '0.00%'}
-                        </div>
-                        <div className="text-[11px] text-slate-500">Recipe KPI</div>
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Add-ons</div>
+                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(additionalCost + wastageCost)}</div>
+                      <div className="truncate text-[11px] text-slate-500">{productionCostSummaryText}</div>
+                    </div>
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Total Recipe Cost</div>
+                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalRecipeCost)}</div>
+                      <div className="text-[11px] text-slate-500">{formatCurrencyPKR(costPerYieldUnit)} / {yieldUnitLabel}</div>
+                    </div>
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Other Cost</div>
+                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(summarizedOtherCost)}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {wastageCost > 0 ? `Includes wastage ${formatCurrencyPKR(wastageCost)}` : 'Other production charges'}
                       </div>
                     </div>
-                  )}
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Yield</div>
+                      <div className="font-semibold text-slate-900">{formattedYieldQuantity} {yieldUnitLabel}</div>
+                      <div className="text-[11px] text-slate-500">Batch output</div>
+                    </div>
+                    <div className="bg-white px-2.5 py-2 text-sm">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Cost per Output Unit</div>
+                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
+                      <div className="text-[11px] text-slate-500">Per {yieldUnitLabel}</div>
+                    </div>
+                  </div>
                 </section>
 
                 {!viewMode && !isPurchasedReadyDialog && copyableRecipes.length > 0 ? (
@@ -3874,31 +4053,42 @@ export function RecipeCosting({
                 {!isPurchasedReadyDialog ? (
                   <>
                     <CollapsibleFormSection
-                      title="Recipe Header"
-                      open={recipeHeaderOpen}
-                      onToggle={() => setRecipeHeaderOpen((current) => !current)}
+                      title={
+                        <div className="flex items-center gap-2">
+                          <span>Recipe Setup</span>
+                          <span
+                            className="inline-flex size-4 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-semibold normal-case tracking-normal text-slate-500"
+                            title="Define one standard yield for this recipe. Production planning and scaled order quantities should be handled outside this screen."
+                          >
+                            ?
+                          </span>
+                        </div>
+                      }
+                      open={recipeSetupOpen}
+                      onToggle={() => setRecipeSetupOpen((current) => !current)}
+                      contentClassName="grid grid-cols-1 gap-x-2 gap-y-2 p-3 sm:grid-cols-2 xl:grid-cols-4"
                     >
                       <div>
-                        <label className={labelClass}>Recipe Name <span className="text-red-500">*</span></label>
+                        <label className={compactSetupLabelClass}>Recipe Name <span className="text-red-500">*</span></label>
                         <input
                           type="text"
                           value={recipeName}
                           onChange={(event) => setRecipeName(event.target.value)}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         />
                       </div>
                       <div>
-                        <label className={labelClass}>Recipe Code</label>
-                        <input type="text" value={recipeCode} readOnly className={inputClass} />
+                        <label className={compactSetupLabelClass}>Recipe Code</label>
+                        <input type="text" value={recipeCode} readOnly className={`${compactSetupInputClass} bg-slate-50 text-slate-500`} />
                       </div>
                       <div>
-                        <label className={labelClass}>Recipe Type <span className="text-red-500">*</span></label>
+                        <label className={compactSetupLabelClass}>Recipe Type <span className="text-red-500">*</span></label>
                         <select
                           value={recipeType}
                           onChange={(event) => setRecipeType(event.target.value as RecipeType)}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         >
                           {recipeTypeOptions.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -3908,12 +4098,24 @@ export function RecipeCosting({
                         </select>
                       </div>
                       <div>
-                        <label className={labelClass}>Recipe Category</label>
+                        <label className={compactSetupLabelClass}>Status</label>
+                        <select
+                          value={recipeStatus}
+                          onChange={(event) => setRecipeStatus(event.target.value as RecipeStatus)}
+                          disabled={viewMode}
+                          className={compactSetupInputClass}
+                        >
+                          <option value="active">Active</option>
+                          <option value="inactive">Inactive</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className={compactSetupLabelClass}>Recipe Category</label>
                         <select
                           value={recipeCategoryId}
                           onChange={(event) => setRecipeCategoryId(event.target.value)}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         >
                           {recipeCategoryOptions.map((option) => (
                             <option key={option.value || 'none'} value={option.value}>
@@ -3923,12 +4125,12 @@ export function RecipeCosting({
                         </select>
                       </div>
                       <div>
-                        <label className={labelClass}>Kitchen Section</label>
+                        <label className={compactSetupLabelClass}>Kitchen Section</label>
                         <select
                           value={kitchenSectionId}
                           onChange={(event) => setKitchenSectionId(event.target.value)}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         >
                           {kitchenSectionOptions.map((option) => (
                             <option key={option.value || 'none'} value={option.value}>
@@ -3938,26 +4140,7 @@ export function RecipeCosting({
                         </select>
                       </div>
                       <div>
-                        <label className={labelClass}>Status</label>
-                        <select
-                          value={recipeStatus}
-                          onChange={(event) => setRecipeStatus(event.target.value as RecipeStatus)}
-                          disabled={viewMode}
-                          className={inputClass}
-                        >
-                          <option value="active">Active</option>
-                          <option value="inactive">Inactive</option>
-                        </select>
-                      </div>
-                    </CollapsibleFormSection>
-
-                    <CollapsibleFormSection
-                      title="Standard Yield"
-                      open={yieldSetupOpen}
-                      onToggle={() => setYieldSetupOpen((current) => !current)}
-                    >
-                      <div>
-                        <label className={labelClass}>Standard Yield Quantity <span className="text-red-500">*</span></label>
+                        <label className={compactSetupLabelClass}>Yield Qty <span className="text-red-500">*</span></label>
                         <input
                           type="number"
                           min="0.01"
@@ -3965,16 +4148,16 @@ export function RecipeCosting({
                           value={yieldQuantity}
                           onChange={(event) => setYieldQuantity(Number(event.target.value))}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         />
                       </div>
                       <div>
-                        <label className={labelClass}>Standard Yield Unit <span className="text-red-500">*</span></label>
+                        <label className={compactSetupLabelClass}>Yield Unit <span className="text-red-500">*</span></label>
                         <select
                           value={yieldUnitId}
                           onChange={(event) => setYieldUnitId(event.target.value as MeasurementUnit)}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         >
                           {resolvedYieldUnitOptions.map((unit) => (
                             <option key={unit.code} value={unit.code}>
@@ -3984,47 +4167,40 @@ export function RecipeCosting({
                         </select>
                       </div>
                       <div>
-                        <label className={labelClass}>Preparation Time Minutes</label>
+                        <label className={compactSetupLabelClass}>Prep Time</label>
                         <input
                           type="number"
                           min="0"
                           value={preparationTimeMinutes}
                           onChange={(event) => setPreparationTimeMinutes(Number(event.target.value))}
                           disabled={viewMode}
-                          className={inputClass}
+                          className={compactSetupInputClass}
                         />
                       </div>
                       <div>
-                        <label className={labelClass}>Wastage</label>
-                        <label className="flex h-8 items-center gap-2 rounded border border-slate-300 bg-white px-2.5 text-sm text-slate-700">
+                        <label className={compactSetupLabelClass}>Enable Wastage</label>
+                        <label className={compactSetupToggleClass}>
                           <input
                             type="checkbox"
                             checked={wastageEnabled}
                             onChange={(event) => handleWastageToggle(event.target.checked)}
                             disabled={viewMode}
-                            className="size-4"
+                            className="size-3.5"
                           />
                           Enable wastage
                         </label>
                       </div>
-                      {wastageEnabled ? (
-                        <div>
-                          <label className={labelClass}>Expected Wastage %</label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={expectedWastagePercentage}
-                            onChange={(event) => setExpectedWastagePercentage(Number(event.target.value))}
-                            disabled={viewMode}
-                            className={inputClass}
-                          />
-                        </div>
-                      ) : null}
-                      <div className="md:col-span-2">
-                        <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                          Define one standard yield for the dish. Production planning and scaled order quantities should be handled outside this recipe-costing screen.
-                        </p>
+                      <div>
+                        <label className={compactSetupLabelClass}>Wastage %</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={expectedWastagePercentage}
+                          onChange={(event) => setExpectedWastagePercentage(Number(event.target.value))}
+                          disabled={viewMode || !wastageEnabled}
+                          className={compactSetupInputClass}
+                        />
                       </div>
                     </CollapsibleFormSection>
                   </>
@@ -4036,7 +4212,7 @@ export function RecipeCosting({
                       <button
                         type="button"
                         onClick={() => setRecipeActiveTab('ingredients')}
-                        className={`h-8 rounded-t border border-b-0 px-3 text-xs font-semibold uppercase tracking-wide ${
+                        className={`h-7 rounded-t border border-b-0 px-2.5 text-[11px] font-semibold uppercase tracking-wide ${
                           recipeActiveTab === 'ingredients'
                             ? 'border-slate-200 bg-white text-slate-900'
                             : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -4048,7 +4224,7 @@ export function RecipeCosting({
                     <button
                       type="button"
                       onClick={() => setRecipeActiveTab('costing')}
-                      className={`h-8 rounded-t border border-b-0 px-3 text-xs font-semibold uppercase tracking-wide ${
+                      className={`h-7 rounded-t border border-b-0 px-2.5 text-[11px] font-semibold uppercase tracking-wide ${
                         recipeActiveTab === 'costing'
                           ? 'border-slate-200 bg-white text-slate-900'
                           : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -4059,7 +4235,7 @@ export function RecipeCosting({
                     <button
                       type="button"
                       onClick={() => setRecipeActiveTab('evaluation')}
-                      className={`h-8 rounded-t border border-b-0 px-3 text-xs font-semibold uppercase tracking-wide ${
+                      className={`h-7 rounded-t border border-b-0 px-2.5 text-[11px] font-semibold uppercase tracking-wide ${
                         recipeActiveTab === 'evaluation'
                           ? 'border-slate-200 bg-white text-slate-900'
                           : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -4071,11 +4247,11 @@ export function RecipeCosting({
 
                   {recipeActiveTab === 'ingredients' ? (
                     <>
-                      <div className="grid gap-2 border-b border-slate-200 px-3 py-2 md:grid-cols-[180px_1fr_auto_auto_auto]">
+                      <div className="grid gap-1.5 border-b border-slate-200 px-2.5 py-1.5 md:grid-cols-[150px_minmax(0,1fr)_auto_auto_auto]">
                         <select
                           value={ingredientCategoryFilter}
                           onChange={(event) => setIngredientCategoryFilter(event.target.value)}
-                          className={inputClass}
+                          className={ingredientToolbarInputClass}
                         >
                           <option value="">All Categories</option>
                           {ingredientCategoryOptions.map(([categoryKey, categoryLabel]) => (
@@ -4085,22 +4261,22 @@ export function RecipeCosting({
                           ))}
                         </select>
                         <div className="relative">
-                          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
                           <input
                             type="text"
                             placeholder="Search ingredient"
                             value={ingredientSearchTerm}
                             onChange={(event) => setIngredientSearchTerm(event.target.value)}
-                            className={`${inputClass} pl-9`}
+                            className={`${ingredientToolbarInputClass} pl-7`}
                           />
                         </div>
-                        <label className="flex h-8 items-center justify-center gap-2 rounded border border-slate-300 bg-white px-2.5 text-xs font-medium text-slate-700">
+                        <label className="flex h-7 items-center justify-center gap-1.5 rounded border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-700">
                           <input
                             type="checkbox"
                             checked={wastageEnabled}
                             onChange={(event) => handleWastageToggle(event.target.checked)}
                             disabled={viewMode}
-                            className="size-4"
+                            className="size-3.5"
                           />
                           Wastage
                         </label>
@@ -4108,7 +4284,7 @@ export function RecipeCosting({
                           <button
                             type="button"
                             onClick={() => setBulkIngredientPickerOpen((current) => !current)}
-                            className="inline-flex h-8 items-center justify-center gap-1 rounded border border-slate-300 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            className={ingredientToolbarButtonClass}
                           >
                             {bulkIngredientPickerOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                             Bulk Select
@@ -4118,7 +4294,7 @@ export function RecipeCosting({
                           <button
                             type="button"
                             onClick={handleAddIngredient}
-                            className="inline-flex h-8 items-center justify-center gap-1 rounded border border-blue-600 bg-blue-600 px-2.5 text-xs font-medium text-white hover:bg-blue-700"
+                            className={ingredientPrimaryButtonClass}
                           >
                             <Plus className="size-3.5" />
                             Add Ingredient
@@ -4176,32 +4352,31 @@ export function RecipeCosting({
                           </div>
                         </div>
                       ) : null}
-                      <div className="flex items-center justify-between border-b border-slate-200 px-3 py-1.5">
+                      <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1">
                         <button
                           type="button"
                           onClick={() => setIngredientsOpen((current) => !current)}
-                          className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                          className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-700"
                         >
                           {ingredientsOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                           Ingredient Lines
                         </button>
-                        <div className="text-[11px] text-slate-500">
+                        <div className="text-[10px] text-slate-500">
                           {pricedRecipeIngredients.length} lines | Save order: category, highest cost
                         </div>
                       </div>
                       {ingredientsOpen ? (
-                      <div className="max-h-[300px] overflow-auto">
+                      <div className="max-h-[42vh] overflow-auto">
                         <table className="w-full">
                           <thead className="sticky top-0 z-10 bg-slate-50">
                             <tr>
                               <th className={compactTableHeadClass}>Ingredient</th>
-                              <th className={`${compactTableHeadClass} w-56 text-center`}>Chef Qty / Unit</th>
-                              {wastageEnabled ? (
-                                <th className={`${compactTableHeadClass} text-right`}>Wastage / Net</th>
-                              ) : null}
-                              <th className={`${compactTableHeadClass} text-right`}>Last Purchase Rate</th>
-                              <th className={`${compactTableHeadClass} text-right`}>Ingredient Cost</th>
-                              <th className={`${compactTableHeadClass} text-right`}>Action</th>
+                              <th className={`${compactTableHeadClass} w-20 text-right`}>Qty Used</th>
+                              <th className={`${compactTableHeadClass} w-20`}>Unit Used</th>
+                              <th className={`${compactTableHeadClass} w-28 text-right`}>Purchase Rate</th>
+                              <th className={`${compactTableHeadClass} w-24 text-right`}>Amount</th>
+                              <th className={`${compactTableHeadClass} w-44`}>Status</th>
+                              {!viewMode ? <th className={`${compactTableHeadClass} w-10 text-right`}>Action</th> : null}
                             </tr>
                           </thead>
                           <tbody>
@@ -4218,15 +4393,16 @@ export function RecipeCosting({
                               const lastPurchaseRate =
                                 selectedItem?.lastPurchaseRate || selectedItem?.lastCost || selectedItem?.defaultPurchaseCost || 0;
                               const purchaseUnit = selectedItem?.purchaseUnitId || selectedItem?.purchaseUnit || '-';
+                              const ingredientStatus = getRecipeIngredientStatus(ingredient, selectedItem, units);
 
                               return (
                                 <tr key={ingredient.id} className="border-t border-slate-200 hover:bg-slate-50">
-                                  <td className={`${compactTableCellClass} min-w-[260px] py-1`}>
+                                  <td className={`${compactTableCellClass} min-w-[320px] px-2 py-0.5`}>
                                     <select
                                       value={selectedItemId}
                                       onChange={(event) => handleIngredientChange(index, 'itemId', event.target.value)}
                                       disabled={viewMode}
-                                      className={compactInputClass}
+                                      className={ingredientRowInputClass}
                                     >
                                       {ingredientOptions.map((item) => (
                                         <option key={item.id} value={item.id}>
@@ -4235,85 +4411,87 @@ export function RecipeCosting({
                                       ))}
                                     </select>
                                   </td>
-                                  <td className={`${compactTableCellClass} w-56 py-1`}>
-                                    <div className="grid grid-cols-[minmax(96px,1fr)_84px] items-center gap-3">
-                                      <input
-                                        type="number"
-                                        min="0.01"
-                                        step="0.01"
-                                        value={ingredient.entryQuantity ?? ingredient.requiredQuantity ?? ingredient.quantity}
-                                        onChange={(event) => handleIngredientChange(index, 'entryQuantity', Number(event.target.value))}
-                                        disabled={viewMode}
-                                        className={`${compactInputClass} text-right`}
-                                      />
-                                      <select
-                                        value={ingredient.entryUnitId || ingredient.unit}
-                                        onChange={(event) => handleIngredientChange(index, 'entryUnitId', event.target.value)}
-                                        disabled={viewMode}
-                                        className={compactInputClass}
+                                  <td className={`${compactTableCellClass} w-20 px-2 py-0.5`}>
+                                    <input
+                                      type="number"
+                                      min="0.01"
+                                      step="0.01"
+                                      value={ingredient.entryQuantity ?? ingredient.requiredQuantity ?? ingredient.quantity}
+                                      onChange={(event) => handleIngredientChange(index, 'entryQuantity', Number(event.target.value))}
+                                      disabled={viewMode}
+                                      className={`${ingredientRowInputClass} text-right`}
+                                    />
+                                  </td>
+                                  <td className={`${compactTableCellClass} w-20 px-2 py-0.5`}>
+                                    <select
+                                      value={ingredient.entryUnitId || ingredient.unit}
+                                      onChange={(event) => handleIngredientChange(index, 'entryUnitId', event.target.value)}
+                                      disabled={viewMode}
+                                      className={ingredientRowInputClass}
+                                    >
+                                      {ingredientUnitOptions.map((unit) => (
+                                        <option key={unit.code} value={unit.code}>
+                                          {unit.code}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className={`${compactTableCellClass} w-28 px-2 py-0.5 text-right`}>
+                                    <div className="whitespace-nowrap text-[11px] font-semibold text-slate-900">
+                                      {formatCurrencyPKR(lastPurchaseRate)} <span className="text-[10px] font-normal text-slate-500">/ {purchaseUnit}</span>
+                                    </div>
+                                  </td>
+                                  <td className={`${compactTableCellClass} w-24 px-2 py-0.5 text-right`}>
+                                    <div className="whitespace-nowrap text-[11px] font-semibold text-slate-900">
+                                      {formatCurrencyPKR(ingredient.totalCost || 0)}
+                                    </div>
+                                  </td>
+                                  <td className={`${compactTableCellClass} w-44 px-2 py-0.5`}>
+                                    <div className="truncate text-[11px]">
+                                      <span
+                                        className={`font-semibold ${
+                                          ingredientStatus.badgeClass.includes('red')
+                                            ? 'text-red-700'
+                                            : ingredientStatus.badgeClass.includes('amber')
+                                              ? 'text-amber-700'
+                                              : 'text-emerald-700'
+                                        }`}
                                       >
-                                        {ingredientUnitOptions.map((unit) => (
-                                          <option key={unit.code} value={unit.code}>
-                                            {unit.code}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                  </td>
-                                  {wastageEnabled ? (
-                                    <td className={`${compactTableCellClass} w-44 py-1 text-right`}>
-                                      <div className="flex items-center justify-end gap-2">
-                                        <input
-                                          type="number"
-                                          min="0"
-                                          step="0.01"
-                                          value={ingredient.wastagePercentage || 0}
-                                          onChange={(event) => handleIngredientChange(index, 'wastagePercentage', Number(event.target.value))}
-                                          disabled={viewMode}
-                                          className={`${compactInputClass} w-20 text-right`}
-                                        />
-                                        <span className="whitespace-nowrap text-[11px] text-slate-600">
-                                          Net {Number(ingredient.netQuantity || 0).toFixed(2)} {ingredient.baseUnitId || '-'}
-                                        </span>
-                                      </div>
-                                    </td>
-                                  ) : null}
-                                  <td className={`${compactTableCellClass} w-40 py-1 text-right`}>
-                                    <div className="whitespace-nowrap font-semibold text-slate-900">
-                                      {formatCurrencyPKR(lastPurchaseRate)} <span className="text-[11px] font-normal text-slate-500">/ {purchaseUnit}</span>
-                                    </div>
-                                  </td>
-                                  <td className={`${compactTableCellClass} w-44 py-1 text-right`}>
-                                    <div className="whitespace-nowrap font-semibold text-slate-900">
-                                      {formatCurrencyPKR(ingredient.totalCost || 0)}{' '}
-                                      <span className="text-[11px] font-normal text-slate-500">
-                                        | {formatCurrencyPKR(latestUnitCost, {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })} / {ingredient.baseUnitId || ingredient.unit}
+                                        {ingredientStatus.label}
+                                      </span>
+                                      <span className="text-slate-400"> • </span>
+                                      <span className="font-medium text-slate-500" title={ingredientStatus.detail}>
+                                        View Calc
                                       </span>
                                     </div>
+                                    <div className="truncate text-[10px] text-slate-500">
+                                      {wastageEnabled
+                                        ? `Wastage ${Number(ingredient.wastagePercentage || 0).toFixed(2)}% | Net ${formatDisplayQuantity(Number(ingredient.netQuantity || 0))} ${ingredient.baseUnitId || ingredient.unit || '-'}`
+                                        : `Internal Rate: ${formatCurrencyPKR(latestUnitCost, {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })} / ${ingredient.baseUnitId || ingredient.unit || '-'
+                                          }`}
+                                    </div>
                                   </td>
-                                  <td className={`${compactTableCellClass} w-14 py-1 text-right`}>
-                                    {!viewMode ? (
+                                  {!viewMode ? (
+                                    <td className={`${compactTableCellClass} w-10 px-1 py-0.5 text-right`}>
                                       <button
                                         type="button"
                                         onClick={() => handleRemoveIngredient(index)}
                                         title="Remove ingredient"
-                                        className="inline-flex size-7 items-center justify-center rounded text-slate-500 hover:bg-red-50 hover:text-red-700"
+                                        className="inline-flex size-6 items-center justify-center rounded text-slate-500 hover:bg-red-50 hover:text-red-700"
                                       >
                                         <X className="size-3.5" />
                                       </button>
-                                    ) : (
-                                      <span className="text-slate-400">-</span>
-                                    )}
-                                  </td>
+                                    </td>
+                                  ) : null}
                                 </tr>
                               );
                             })}
                             {recipeIngredients.length === 0 ? (
                               <tr>
-                                <td className="px-3 py-6 text-center text-sm text-slate-500" colSpan={wastageEnabled ? 6 : 5}>
+                                <td className="px-3 py-6 text-center text-sm text-slate-500" colSpan={viewMode ? 6 : 7}>
                                   No ingredients added yet.
                                 </td>
                               </tr>
@@ -4327,56 +4505,93 @@ export function RecipeCosting({
 
                   {recipeActiveTab === 'costing' ? (
                     <>
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
-                        <div className="flex flex-wrap overflow-hidden rounded border border-slate-200 bg-slate-200 text-xs">
-                          {visibleProductionCostSummaries.map((entry) => (
-                            <div key={entry.key} className="min-w-[96px] bg-white px-2.5 py-1">
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{entry.label}</div>
-                              <div className="font-semibold text-slate-900">{formatCurrencyPKR(entry.amount)}</div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-2.5 py-1.5">
+                        <div className="flex flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                          {costingKpiStripEntries.map((entry) => (
+                            <div key={entry.key} className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-white px-2 py-1">
+                              <span className="font-semibold uppercase tracking-wide text-slate-500">{entry.label}</span>
+                              <span className="font-semibold text-slate-900">{entry.value}</span>
                             </div>
                           ))}
-                          <div className="min-w-[120px] bg-white px-2.5 py-1">
-                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Standard Cost / {yieldUnitId}</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
-                          </div>
                         </div>
                         {!viewMode ? (
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => handleAddRecipeCostLine('labor')}
-                              className="inline-flex h-8 items-center justify-center gap-1 rounded border border-blue-600 bg-blue-600 px-2.5 text-xs font-medium text-white hover:bg-blue-700"
+                              className={ingredientPrimaryButtonClass}
                             >
                               <Plus className="size-3.5" />
                               Add Labor
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleAddRecipeCostLine('utility')}
-                              className="inline-flex h-8 items-center justify-center gap-1 rounded border border-slate-300 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <Plus className="size-3.5" />
-                              Add Utility
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleAddRecipeCostLine('packaging')}
-                              className="inline-flex h-8 items-center justify-center gap-1 rounded border border-slate-300 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <Plus className="size-3.5" />
-                              Add Packaging
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleAddRecipeCostLine('other')}
-                              className="inline-flex h-8 items-center justify-center gap-1 rounded border border-slate-300 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                            >
-                              <Plus className="size-3.5" />
-                              Add Other
-                            </button>
+                            {utilityCostEnabled ? (
+                              <button
+                                type="button"
+                                onClick={() => handleAddRecipeCostLine('utility')}
+                                className={ingredientToolbarButtonClass}
+                              >
+                                <Plus className="size-3.5" />
+                                Add Utility
+                              </button>
+                            ) : null}
+                            {packagingCostEnabled ? (
+                              <button
+                                type="button"
+                                onClick={() => handleAddRecipeCostLine('packaging')}
+                                className={ingredientToolbarButtonClass}
+                              >
+                                <Plus className="size-3.5" />
+                                Add Packaging
+                              </button>
+                            ) : null}
+                            {otherProductionCostEnabled ? (
+                              <button
+                                type="button"
+                                onClick={() => handleAddRecipeCostLine('other')}
+                                className={ingredientToolbarButtonClass}
+                              >
+                                <Plus className="size-3.5" />
+                                Add Other
+                              </button>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
+                      {!viewMode && !isPurchasedReadyDialog ? (
+                        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700">
+                          <span className="font-semibold uppercase tracking-wide text-slate-600">Optional Charges</span>
+                          <label className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 bg-white px-2">
+                            <input
+                              type="checkbox"
+                              checked={utilityCostEnabled}
+                              onChange={(event) => setUtilityCostEnabled(event.target.checked)}
+                              className="size-3"
+                            />
+                            Utility
+                          </label>
+                          <label className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 bg-white px-2">
+                            <input
+                              type="checkbox"
+                              checked={packagingCostEnabled}
+                              onChange={(event) => setPackagingCostEnabled(event.target.checked)}
+                              className="size-3"
+                            />
+                            Packaging
+                          </label>
+                          <label className="inline-flex h-6 items-center gap-1 rounded border border-slate-200 bg-white px-2">
+                            <input
+                              type="checkbox"
+                              checked={otherProductionCostEnabled}
+                              onChange={(event) => setOtherProductionCostEnabled(event.target.checked)}
+                              className="size-3"
+                            />
+                            Other
+                          </label>
+                          <span className="text-[10px] text-slate-500">
+                            Unchecked sections do not add cost and do not show as missing in the register.
+                          </span>
+                        </div>
+                      ) : null}
                       {isPurchasedReadyDialog ? (
                         <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
                           <span className="font-semibold text-slate-900">Purchased ready formula:</span>{' '}
@@ -4392,14 +4607,24 @@ export function RecipeCosting({
                           )}
                         </div>
                       ) : null}
-                      <div className="space-y-2 p-2">
+                      <div className="space-y-1.5 p-2">
                         {visibleProductionCostSections.map((entry) =>
                           renderCostSection(entry.category, entry.title, entry.rows, entry.total),
                         )}
                         {visibleProductionCostSections.length > 0 ? (
-                          <div className="sticky bottom-0 z-10 flex items-center justify-between rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm shadow-sm">
-                            <div className="font-semibold text-blue-950">Total Additional Production Cost</div>
-                            <div className="text-base font-bold text-blue-950">{formatCurrencyPKR(additionalCost)}</div>
+                          <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] shadow-sm">
+                            <div className="inline-flex items-center gap-1.5">
+                              <span className="font-semibold uppercase tracking-wide text-blue-900">Labor Total</span>
+                              <span className="font-semibold text-blue-950">{formatCurrencyPKR(laborCost)}</span>
+                            </div>
+                            <div className="inline-flex items-center gap-1.5">
+                              <span className="font-semibold uppercase tracking-wide text-blue-900">Utility Total</span>
+                              <span className="font-semibold text-blue-950">{formatCurrencyPKR(utilitiesCost)}</span>
+                            </div>
+                            <div className="inline-flex items-center gap-1.5">
+                              <span className="font-semibold uppercase tracking-wide text-blue-900">Total Additional Production Cost</span>
+                              <span className="font-bold text-blue-950">{formatCurrencyPKR(additionalCost)}</span>
+                            </div>
                           </div>
                         ) : null}
                       </div>
@@ -4407,204 +4632,184 @@ export function RecipeCosting({
                   ) : null}
 
                   {recipeActiveTab === 'evaluation' ? (
-                    isPurchasedReadyDialog ? (
-                      <>
-                        <div className="grid grid-cols-2 gap-px border-b border-slate-200 bg-slate-200 md:grid-cols-3 xl:grid-cols-6">
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Purchase Cost</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalIngredientCost)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Standard Dish Cost</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalRecipeCost)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Standard Cost / {yieldUnitId}</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Selling Price / {yieldUnitId}</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Margin / {yieldUnitId}</div>
-                            <div className={`font-semibold ${marginPerYieldUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{formatCurrencyPKR(marginPerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Margin %</div>
-                            <div className="font-semibold text-slate-900">
-                              {Number.isFinite(marginPercentage) ? `${marginPercentage.toFixed(2)}%` : '0.00%'}
-                            </div>
-                          </div>
+                    <>
+                      <div className="grid grid-cols-2 gap-px border-b border-slate-200 bg-slate-200 md:grid-cols-4 xl:grid-cols-8">
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">{ingredientSummaryLabel}</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalIngredientCost)}</div>
                         </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Labor Cost</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(laborCost)}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Utility Cost</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(utilitiesCost)}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Packaging Cost</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(packagingConsumableCost)}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Other Cost</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(summarizedOtherCost)}</div>
+                          {wastageCost > 0 ? (
+                            <div className="text-[11px] text-slate-500">Includes wastage {formatCurrencyPKR(wastageCost)}</div>
+                          ) : null}
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Total Recipe Cost</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalRecipeCost)}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Yield</div>
+                          <div className="font-semibold text-slate-900">{formattedYieldQuantity} {yieldUnitLabel}</div>
+                        </div>
+                        <div className="bg-white px-3 py-2 text-sm">
+                          <div className="text-xs text-slate-500">Cost per Output Unit</div>
+                          <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
+                        </div>
+                      </div>
 
-                        <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-                          <div className="overflow-hidden border border-slate-200">
-                            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                              Cost Breakdown
+                      <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(340px,0.85fr)]">
+                        <div className="space-y-3">
+                          <div className="grid gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2 lg:grid-cols-[150px_140px_repeat(4,minmax(0,1fr))]">
+                            <div>
+                              <label className={labelClass}>Margin Basis</label>
+                              <select
+                                value={evaluationMode}
+                                onChange={(event) => setEvaluationMode(event.target.value as RecipeEvaluationMode)}
+                                disabled={viewMode}
+                                className={inputClass}
+                              >
+                                <option value="profit-per-unit">Margin by Value</option>
+                                <option value="profit-percent">Margin by %</option>
+                              </select>
                             </div>
-                            <table className="w-full">
-                              <tbody>
-                                {evaluationCostBreakdownRows.map((row) => (
-                                  <tr key={row.label} className="border-t border-slate-200 first:border-t-0">
-                                    <td className={compactTableCellClass}>{row.label === 'Ingredients' ? 'Purchase Cost' : row.label}</td>
-                                    <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(row.amount)}</td>
-                                    <td className={`${compactTableCellClass} text-right`}>{formatShare(row.amount, totalRecipeCost)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                            <div>
+                              <label className={labelClass}>
+                                {evaluationMode === 'profit-percent' ? 'Margin %' : `Margin / ${yieldUnitLabel}`}
+                              </label>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={evaluationValue}
+                                onChange={(event) => setEvaluationValue(Number(event.target.value))}
+                                disabled={viewMode}
+                                className={inputClass}
+                              />
+                            </div>
+                            <div className="rounded border border-slate-200 bg-white px-2.5 py-2 text-xs">
+                              <div className="text-slate-500">Food Supply Cost / {yieldUnitLabel}</div>
+                              <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
+                            </div>
+                            <div className="rounded border border-slate-200 bg-white px-2.5 py-2 text-xs">
+                              <div className="text-slate-500">Selling Rate / {yieldUnitLabel}</div>
+                              <div className="font-semibold text-slate-900">{formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
+                            </div>
+                            <div className="rounded border border-slate-200 bg-white px-2.5 py-2 text-xs">
+                              <div className="text-slate-500">Food Cost %</div>
+                              <div className="font-semibold text-slate-900">{foodCostPercentage.toFixed(2)}%</div>
+                            </div>
+                            <div className="rounded border border-slate-200 bg-white px-2.5 py-2 text-xs">
+                              <div className="text-slate-500">Target Margin %</div>
+                              <div className="font-semibold text-slate-900">
+                                {supplySellingPricePerYieldUnit > 0
+                                  ? `${(((supplySellingPricePerYieldUnit - costPerYieldUnit) / supplySellingPricePerYieldUnit) * 100).toFixed(2)}%`
+                                  : '0.00%'}
+                              </div>
+                            </div>
                           </div>
 
-                          <div className="space-y-3">
-                            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-                              <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">Linked Purchase Item</div>
-                              <div className="mt-1 font-semibold text-slate-900">
-                                {selectedLinkedPurchaseItem ? selectedLinkedPurchaseItem.itemName : 'Not linked'}
+                          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                            This evaluation is only for food supply selling guidance. Menu Package Builder and Menu Guest Count Rate Evaluation continue to use the production cost only: {formatCurrencyPKR(costPerYieldUnit)} / {yieldUnitLabel}.
+                          </div>
+
+                          {!isPurchasedReadyDialog ? (
+                            <div className="overflow-hidden border border-slate-200">
+                              <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                                Ingredient Cost Ranking
                               </div>
-                              <div className="mt-1 text-xs text-slate-600">
-                                {selectedLinkedPurchaseItem
-                                  ? `Source cost per unit: ${formatCurrencyPKR(selectedPurchasedReadyUnitCost)}`
-                                  : 'Link a purchased item in Dish Master so purchased-ready costing can read the vendor cost.'}
+                              <div className="max-h-[320px] overflow-auto">
+                                <table className="w-full">
+                                  <thead className="sticky top-0 z-10 bg-slate-50">
+                                    <tr>
+                                      <th className={compactTableHeadClass}>Rank</th>
+                                      <th className={compactTableHeadClass}>Category</th>
+                                      <th className={compactTableHeadClass}>Ingredient</th>
+                                      <th className={`${compactTableHeadClass} text-right`}>Qty Used</th>
+                                      <th className={`${compactTableHeadClass} text-right`}>Last Purchase Cost</th>
+                                      <th className={`${compactTableHeadClass} text-right`}>Amount</th>
+                                      <th className={`${compactTableHeadClass} text-right`}>Share</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {sortedEvaluationIngredientRows.map((row) => (
+                                      <tr key={row.ingredient.id} className="border-t border-slate-200">
+                                        <td className={compactTableCellClass}>{row.rank}</td>
+                                        <td className={compactTableCellClass}>{row.snapshot.categoryName}</td>
+                                        <td className={compactTableCellClass}>
+                                          <div className="font-medium text-slate-900">{row.snapshot.itemName}</div>
+                                          <div
+                                            className="text-[11px] text-slate-500"
+                                            title={getRecipeIngredientStatus(
+                                              row.ingredient,
+                                              resolveRecipeIngredientItem(row.ingredient, purchaseItems) || undefined,
+                                              units,
+                                            ).detail}
+                                          >
+                                            View calculation
+                                          </div>
+                                        </td>
+                                        <td className={`${compactTableCellClass} text-right`}>
+                                          {formatDisplayQuantity(
+                                            row.ingredient.scaledEntryQuantity ||
+                                              row.ingredient.entryQuantity ||
+                                              row.ingredient.quantity ||
+                                              0,
+                                          )} {row.ingredient.entryUnitId || row.ingredient.unit || '-'}
+                                        </td>
+                                        <td className={`${compactTableCellClass} text-right`}>
+                                          <div className="font-medium text-slate-900">{formatCurrencyPKR(row.snapshot.lastPurchaseRate)}</div>
+                                          <div className="text-[11px] text-slate-500">/{row.snapshot.lastPurchaseUnit}</div>
+                                        </td>
+                                        <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>
+                                          {formatCurrencyPKR(row.ingredient.totalCost || 0)}
+                                        </td>
+                                        <td className={`${compactTableCellClass} text-right`}>{row.recipeShare}</td>
+                                      </tr>
+                                    ))}
+                                    {sortedEvaluationIngredientRows.length === 0 ? (
+                                      <tr>
+                                        <td className="px-3 py-6 text-center text-sm text-slate-500" colSpan={7}>
+                                          No ingredient costs to evaluate yet.
+                                        </td>
+                                      </tr>
+                                    ) : null}
+                                  </tbody>
+                                </table>
                               </div>
                             </div>
+                          ) : (
                             <div className="rounded border border-slate-200 bg-white">
                               <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                                Commercial Totals
+                                Linked Purchase Item
                               </div>
-                              <table className="w-full">
-                                <tbody>
-                                  <tr className="border-t border-slate-200 first:border-t-0">
-                                    <td className={compactTableCellClass}>Food Cost %</td>
-                                    <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>
-                                      {Number.isFinite(foodCostPercentage) ? `${foodCostPercentage.toFixed(2)}%` : '0.00%'}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-t border-slate-200">
-                                    <td className={compactTableCellClass}>Selling Price Total</td>
-                                    <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(sellingPriceTotal)}</td>
-                                  </tr>
-                                  <tr className="border-t border-slate-200">
-                                    <td className={compactTableCellClass}>Total Margin</td>
-                                    <td className={`${compactTableCellClass} text-right font-semibold ${totalMargin < 0 ? 'text-red-700' : 'text-slate-900'}`}>
-                                      {formatCurrencyPKR(totalMargin)}
-                                    </td>
-                                  </tr>
-                                  <tr className="border-t border-slate-200">
-                                    <td className={compactTableCellClass}>Standard Yield</td>
-                                    <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>
-                                      {yieldQuantity} {yieldUnitId}
-                                    </td>
-                                  </tr>
-                                </tbody>
-                              </table>
+                              <div className="px-3 py-3 text-sm">
+                                <div className="font-semibold text-slate-900">{selectedLinkedPurchaseItem ? selectedLinkedPurchaseItem.itemName : 'Not linked'}</div>
+                                <div className="mt-1 text-xs text-slate-600">
+                                  {selectedLinkedPurchaseItem
+                                    ? `Source cost per unit: ${formatCurrencyPKR(selectedPurchasedReadyUnitCost)} / ${selectedPurchaseCostUnitLabel}`
+                                    : 'Link a purchase item in Dish Master so purchased-ready costing can read the vendor cost.'}
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="grid grid-cols-2 gap-px border-b border-slate-200 bg-slate-200 md:grid-cols-3 xl:grid-cols-6">
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Standard Dish Cost</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalRecipeCost)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Ingredient Cost</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(totalIngredientCost)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Standard Cost / {yieldUnitId}</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(costPerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Standard Yield</div>
-                            <div className="font-semibold text-slate-900">{yieldQuantity} {yieldUnitId}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Selling Price / {yieldUnitId}</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(supplySellingPricePerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Margin / {yieldUnitId}</div>
-                            <div className={`font-semibold ${marginPerYieldUnit < 0 ? 'text-red-700' : 'text-slate-900'}`}>{formatCurrencyPKR(marginPerYieldUnit)}</div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Food Cost %</div>
-                            <div className="font-semibold text-slate-900">
-                              {Number.isFinite(foodCostPercentage) ? `${foodCostPercentage.toFixed(2)}%` : '0.00%'}
-                            </div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Margin %</div>
-                            <div className="font-semibold text-slate-900">
-                              {Number.isFinite(marginPercentage) ? `${marginPercentage.toFixed(2)}%` : '0.00%'}
-                            </div>
-                          </div>
-                          <div className="bg-white px-3 py-2 text-sm">
-                            <div className="text-xs text-slate-500">Selling Price Total</div>
-                            <div className="font-semibold text-slate-900">{formatCurrencyPKR(sellingPriceTotal)}</div>
-                          </div>
+                          )}
                         </div>
 
-                        <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.75fr)]">
-                          <div className="overflow-hidden border border-slate-200">
-                            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                              Ingredient Cost Ranking
-                            </div>
-                            <div className="max-h-[320px] overflow-auto">
-                              <table className="w-full">
-                                <thead className="sticky top-0 z-10 bg-slate-50">
-                                  <tr>
-                                    <th className={compactTableHeadClass}>Rank</th>
-                                    <th className={compactTableHeadClass}>Category</th>
-                                    <th className={compactTableHeadClass}>Ingredient</th>
-                                    <th className={`${compactTableHeadClass} text-right`}>Scaled Qty</th>
-                                    <th className={`${compactTableHeadClass} text-right`}>Last Purchase Rate</th>
-                                    <th className={`${compactTableHeadClass} text-right`}>Cost</th>
-                                    <th className={`${compactTableHeadClass} text-right`}>Share</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {sortedEvaluationIngredientRows.map((row) => (
-                                    <tr key={row.ingredient.id} className="border-t border-slate-200">
-                                      <td className={compactTableCellClass}>{row.rank}</td>
-                                      <td className={compactTableCellClass}>{row.snapshot.categoryName}</td>
-                                      <td className={compactTableCellClass}>
-                                        <div className="font-medium text-slate-900">{row.snapshot.itemName}</div>
-                                        <div className="text-[11px] text-slate-500">
-                                          {formatCurrencyPKR(row.ingredient.unitCost ?? row.ingredient.costPerUnit ?? 0, {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })} / {row.ingredient.baseUnitId || row.ingredient.unit}
-                                        </div>
-                                      </td>
-                                      <td className={`${compactTableCellClass} text-right`}>
-                                        {(row.ingredient.scaledBaseQuantity || 0).toFixed(3)} {row.ingredient.baseUnitId || '-'}
-                                      </td>
-                                      <td className={`${compactTableCellClass} text-right`}>
-                                        <div className="font-medium text-slate-900">{formatCurrencyPKR(row.snapshot.lastPurchaseRate)}</div>
-                                        <div className="text-[11px] text-slate-500">/{row.snapshot.lastPurchaseUnit}</div>
-                                      </td>
-                                      <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>
-                                        {formatCurrencyPKR(row.ingredient.totalCost || 0)}
-                                      </td>
-                                      <td className={`${compactTableCellClass} text-right`}>{row.recipeShare}</td>
-                                    </tr>
-                                  ))}
-                                  {sortedEvaluationIngredientRows.length === 0 ? (
-                                    <tr>
-                                      <td className="px-3 py-6 text-center text-sm text-slate-500" colSpan={7}>
-                                        No ingredient costs to evaluate yet.
-                                      </td>
-                                    </tr>
-                                  ) : null}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-
-                          <div className="space-y-3">
+                        <div className="space-y-3">
+                          {!isPurchasedReadyDialog ? (
                             <div className="overflow-hidden border border-slate-200">
                               <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
                                 Category Cost
@@ -4637,27 +4842,77 @@ export function RecipeCosting({
                                 </tbody>
                               </table>
                             </div>
+                          ) : null}
 
-                            <div className="overflow-hidden border border-slate-200">
-                              <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                                Cost Breakdown
-                              </div>
-                              <table className="w-full">
-                                <tbody>
-                                  {evaluationCostBreakdownRows.map((row) => (
-                                    <tr key={row.label} className="border-t border-slate-200 first:border-t-0">
-                                      <td className={compactTableCellClass}>{row.label}</td>
-                                      <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(row.amount)}</td>
-                                      <td className={`${compactTableCellClass} text-right`}>{formatShare(row.amount, totalRecipeCost)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                          <div className="overflow-hidden border border-slate-200">
+                            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                              Recipe Cost Summary
                             </div>
+                            <table className="w-full">
+                              <tbody>
+                                <tr className="border-t border-slate-200 first:border-t-0">
+                                  <td className={compactTableCellClass}>{ingredientSummaryLabel}</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(totalIngredientCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right`}>{formatShare(totalIngredientCost, totalRecipeCost)}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Labor Cost</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(laborCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right`}>{formatShare(laborCost, totalRecipeCost)}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Utility Cost</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(utilitiesCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right`}>{formatShare(utilitiesCost, totalRecipeCost)}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Packaging Cost</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(packagingConsumableCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right`}>{formatShare(packagingConsumableCost, totalRecipeCost)}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Other Cost</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(summarizedOtherCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right`}>{formatShare(summarizedOtherCost, totalRecipeCost)}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Yield</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formattedYieldQuantity} {yieldUnitLabel}</td>
+                                  <td className={`${compactTableCellClass} text-right text-slate-500`}>Output</td>
+                                </tr>
+                                <tr className="border-t border-slate-200">
+                                  <td className={compactTableCellClass}>Cost per Output Unit</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(costPerYieldUnit)}</td>
+                                  <td className={`${compactTableCellClass} text-right text-slate-500`}>Per {yieldUnitLabel}</td>
+                                </tr>
+                                <tr className="border-t border-slate-200 bg-slate-50">
+                                  <td className={`${compactTableCellClass} font-semibold text-slate-900`}>Total Recipe Cost</td>
+                                  <td className={`${compactTableCellClass} text-right font-bold text-slate-900`}>{formatCurrencyPKR(totalRecipeCost)}</td>
+                                  <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>100%</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <div className="overflow-hidden border border-slate-200">
+                            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                              Cost Breakdown
+                            </div>
+                            <table className="w-full">
+                              <tbody>
+                                {evaluationCostBreakdownRows.map((row) => (
+                                  <tr key={row.label} className="border-t border-slate-200 first:border-t-0">
+                                    <td className={compactTableCellClass}>{row.label === 'Ingredients' ? ingredientSummaryLabel : row.label}</td>
+                                    <td className={`${compactTableCellClass} text-right font-semibold text-slate-900`}>{formatCurrencyPKR(row.amount)}</td>
+                                    <td className={`${compactTableCellClass} text-right`}>{formatShare(row.amount, totalRecipeCost)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </div>
                         </div>
-                      </>
-                    )
+                      </div>
+                    </>
                   ) : null}
                 </section>
 

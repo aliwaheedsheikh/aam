@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Booking } from '../../calendar/types-v2';
-import { Dish, KitchenIssueSheet, MenuPackage, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
+import { Dish, KitchenIssueSheet, MenuPackage, ProductionCostMethod, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
 import {
   buildBanquetProductionPlans,
   type BookingProductionPlan,
@@ -25,6 +25,7 @@ interface BanquetProductionPlanningProps {
   stores: StoreMaster[];
   recipes: Recipe[];
   menuPackages: MenuPackage[];
+  productionCostMethods: ProductionCostMethod[];
   purchaseItems: PurchaseItem[];
   storeStocks: StoreStock[];
   units: UnitMaster[];
@@ -67,6 +68,10 @@ const getStatusLabel = (status: BookingProductionPlan['issueStatus']) => {
   }
 };
 
+const formatUsageSources = (
+  usageSources?: Array<{ label: string }>,
+) => (usageSources && usageSources.length > 0 ? usageSources.map((source) => source.label).join(', ') : '');
+
 export function BanquetProductionPlanning({
   userName,
   bookings,
@@ -74,6 +79,7 @@ export function BanquetProductionPlanning({
   stores,
   recipes,
   menuPackages,
+  productionCostMethods,
   purchaseItems,
   storeStocks,
   units,
@@ -91,12 +97,13 @@ export function BanquetProductionPlanning({
         dishes,
         recipes,
         menuPackages,
+        productionCostMethods,
         purchaseItems,
         storeStocks,
         units,
         issueSheets,
       }),
-    [bookings, selectedDate, dishes, recipes, menuPackages, purchaseItems, storeStocks, units, issueSheets],
+    [bookings, selectedDate, dishes, recipes, menuPackages, productionCostMethods, purchaseItems, storeStocks, units, issueSheets],
   );
 
   const metrics = useMemo(
@@ -132,6 +139,7 @@ export function BanquetProductionPlanning({
         shortageQuantity: lineItem.shortageQuantity,
         availableQuantity: lineItem.availableQuantity,
         linkedDishes: lineItem.linkedDishes,
+        usageSources: lineItem.usageSources,
       }));
 
     if (lineItems.length === 0) {
@@ -342,7 +350,12 @@ export function BanquetProductionPlanning({
                     <tbody className="divide-y">
                       {plan.ingredients.map((lineItem) => (
                         <tr key={`${plan.bookingId}-${lineItem.purchaseItemId}-${lineItem.sourceStore}`} className="hover:bg-gray-50">
-                          <td className="px-4 py-3 font-medium text-gray-900">{lineItem.itemName}</td>
+                          <td className="px-4 py-3 font-medium text-gray-900">
+                            <div>{lineItem.itemName}</div>
+                            {lineItem.usageSources.length > 0 ? (
+                              <div className="text-xs font-normal text-gray-500">{formatUsageSources(lineItem.usageSources)}</div>
+                            ) : null}
+                          </td>
                           <td className="px-4 py-3 text-gray-700">{getStoreDisplayName(stores, lineItem.sourceStore)}</td>
                           <td className="px-4 py-3 text-right text-gray-700">
                             {formatNumberPK(lineItem.totalRequiredQuantity)} {lineItem.unit}
@@ -368,7 +381,7 @@ export function BanquetProductionPlanning({
                       {plan.ingredients.length === 0 ? (
                         <tr>
                           <td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">
-                            No issue-ready ingredient lines are available for this event yet.
+                            No issue-ready stock accountability lines are available for this event yet.
                           </td>
                         </tr>
                       ) : null}

@@ -362,15 +362,43 @@ export function TentativeReservationWorkspace({
   const [priority, setPriority] = useState<InquiryPriority>('Medium');
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerRecord | null>(null);
   const [customerAction, setCustomerAction] = useState<'use-existing' | 'update-info' | null>(null);
+  const [masterDataRevision, setMasterDataRevision] = useState(0);
 
-  const availablePrimeSpaces = useMemo(() => getPrimeSpacesByVenue(venueId), [venueId]);
+  useEffect(() => {
+    const bumpMasterDataRevision = () => {
+      setMasterDataRevision((current) => current + 1);
+    };
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key.startsWith('venueops_master_')) {
+        bumpMasterDataRevision();
+      }
+    };
+
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key.startsWith('venueops_master_')) {
+        bumpMasterDataRevision();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
+  }, []);
+
+  const availablePrimeSpaces = useMemo(() => getPrimeSpacesByVenue(venueId), [masterDataRevision, venueId]);
   const selectedPrimeSpace = useMemo(
     () => availablePrimeSpaces.find((space) => space.id === primeSpaceId),
     [availablePrimeSpaces, primeSpaceId]
   );
   const activeEventTypes = useMemo(
     () => loadSetupEventTypes().filter((eventTypeConfig) => eventTypeConfig.isActive),
-    []
+    [masterDataRevision]
   );
   const eventDate = normalizeDate(eventDateValue);
 
@@ -383,7 +411,7 @@ export function TentativeReservationWorkspace({
       : initialData?.subSpaceName || initialData?.primeSpaceName || initialData?.primeSpaceNames?.[0];
 
     return [venueName, spaceName].filter(Boolean).join(' - ');
-  }, [initialData, primeSpaceId, selectedPrimeSpace, subSpaceId, venueId]);
+  }, [initialData, masterDataRevision, primeSpaceId, selectedPrimeSpace, subSpaceId, venueId]);
 
   useEffect(() => {
     if (!open) return;

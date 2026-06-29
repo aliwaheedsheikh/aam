@@ -33,6 +33,7 @@ import {
   normalizeStoreStocks,
 } from '@/app/lib/storeMaster';
 import { syncBanquetRecipePricingFromPurchaseItems } from '@/app/lib/banquetRecipeRepricing';
+import { createDefaultProductionCostMethods } from '@/app/lib/productionCostMethods';
 import { DEFAULT_UNIT_MASTERS } from '@/app/lib/unitConversion';
 import {
   DEFAULT_PROCUREMENT_LOOKUPS,
@@ -43,6 +44,7 @@ import type {
   KitchenIssueSheet,
   KitchenStation,
   MenuPackageTypeMaster,
+  ProductionCostMethod,
   ProcurementLookupState,
   PurchaseItem,
   StoreMaster,
@@ -492,6 +494,10 @@ export function ERPSystem({
   );
   
   const [recipes, setRecipes] = usePersistedWorkflowState<Recipe[]>(WORKFLOW_STATE_KEYS.banquetRecipes, []);
+  const [productionCostMethods, setProductionCostMethods] = usePersistedWorkflowState<ProductionCostMethod[]>(
+    WORKFLOW_STATE_KEYS.banquetProductionCostMethods,
+    createDefaultProductionCostMethods(),
+  );
   const [menuPackages, setMenuPackages] = usePersistedWorkflowState<MenuPackage[]>(
     WORKFLOW_STATE_KEYS.banquetMenuPackages,
     [],
@@ -736,6 +742,8 @@ export function ERPSystem({
   recipesRef.current = recipes;
   const menuPackagesRef = useRef(menuPackages);
   menuPackagesRef.current = menuPackages;
+  const productionCostMethodsRef = useRef(productionCostMethods);
+  productionCostMethodsRef.current = productionCostMethods;
   const userNameRef = useRef(userName);
   userNameRef.current = userName;
 
@@ -744,6 +752,7 @@ export function ERPSystem({
       recipes: recipesRef.current,
       purchaseItems,
       units: measurementUnits,
+      productionCostMethods: productionCostMethodsRef.current,
       dishes: dishesRef.current,
       menuPackages: menuPackagesRef.current,
       userName: userNameRef.current,
@@ -759,6 +768,7 @@ export function ERPSystem({
   }, [
     measurementUnits,
     purchaseItems,
+    productionCostMethods,
     setDishes,
     setMenuPackages,
     setRecipes,
@@ -1508,6 +1518,7 @@ export function ERPSystem({
             vendorItemMappings={vendorItemMappings}
             procurementLookups={procurementLookups}
             recipes={recipes}
+            productionCostMethods={productionCostMethods}
             menuPackages={menuPackages}
             menuPackageTypes={menuPackageTypes}
             onCuisinesChange={setCuisines}
@@ -1520,6 +1531,7 @@ export function ERPSystem({
             onProcurementLookupsChange={setProcurementLookups}
             onStoreStocksChange={setStoreStocks}
             onRecipesChange={setRecipes}
+            onProductionCostMethodsChange={setProductionCostMethods}
             onMenuPackagesChange={setMenuPackages}
             onMenuPackageTypesChange={setMenuPackageTypes}
           />
@@ -1541,6 +1553,7 @@ export function ERPSystem({
           stores={stores}
           recipes={recipes}
           menuPackages={menuPackages}
+          productionCostMethods={productionCostMethods}
           purchaseItems={purchaseItems}
           storeStocks={storeStocks}
           units={measurementUnits}
@@ -1588,6 +1601,7 @@ export function ERPSystem({
           dishes={dishes}
           recipes={recipes}
           menuPackages={menuPackages}
+          productionCostMethods={productionCostMethods}
           kitchenIssueSheets={kitchenIssueSheets}
           onVendorsChange={setVendors}
           onProcurementLookupsChange={setProcurementLookups}

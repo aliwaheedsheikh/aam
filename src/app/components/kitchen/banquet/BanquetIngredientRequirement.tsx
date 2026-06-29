@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Button } from '../../ui/button';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, PackageCheck, ShoppingCart, Users } from 'lucide-react';
 import { Booking } from '../../calendar/types-v2';
-import { Dish, KitchenIssueSheet, MenuPackage, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
+import { Dish, KitchenIssueSheet, MenuPackage, ProductionCostMethod, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
 import {
   buildBanquetProductionPlans,
   buildConsolidatedBanquetRequirements,
@@ -16,6 +16,7 @@ interface BanquetIngredientRequirementProps {
   stores: StoreMaster[];
   recipes: Recipe[];
   menuPackages: MenuPackage[];
+  productionCostMethods: ProductionCostMethod[];
   purchaseItems: PurchaseItem[];
   storeStocks: StoreStock[];
   units: UnitMaster[];
@@ -39,12 +40,17 @@ const getStatusLabel = (status: string) => {
   }
 };
 
+const formatUsageSources = (
+  usageSources?: Array<{ label: string }>,
+) => (usageSources && usageSources.length > 0 ? usageSources.map((source) => source.label).join(', ') : '');
+
 export function BanquetIngredientRequirement({
   bookings,
   dishes,
   stores,
   recipes,
   menuPackages,
+  productionCostMethods,
   purchaseItems,
   storeStocks,
   units,
@@ -60,12 +66,13 @@ export function BanquetIngredientRequirement({
         dishes,
         recipes,
         menuPackages,
+        productionCostMethods,
         purchaseItems,
         storeStocks,
         units,
         issueSheets,
       }),
-    [bookings, selectedDate, dishes, recipes, menuPackages, purchaseItems, storeStocks, units, issueSheets],
+    [bookings, selectedDate, dishes, recipes, menuPackages, productionCostMethods, purchaseItems, storeStocks, units, issueSheets],
   );
 
   const consolidatedRequirements = useMemo(
@@ -202,7 +209,12 @@ export function BanquetIngredientRequirement({
                       <tbody className="divide-y">
                         {consolidatedRequirements.map((item) => (
                           <tr key={`${item.purchaseItemId}-${item.sourceStore}`}>
-                            <td className="px-4 py-3 font-medium text-gray-900">{item.itemName}</td>
+                            <td className="px-4 py-3 font-medium text-gray-900">
+                              <div>{item.itemName}</div>
+                              {item.usageSources.length > 0 ? (
+                                <div className="text-xs font-normal text-gray-500">{formatUsageSources(item.usageSources)}</div>
+                              ) : null}
+                            </td>
                             <td className="px-4 py-3 text-gray-600">{getStoreDisplayName(stores, item.sourceStore)}</td>
                             <td className="px-4 py-3 text-right text-gray-700">
                               {formatNumberPK(item.totalRequiredQuantity)} {item.unit}
@@ -237,7 +249,7 @@ export function BanquetIngredientRequirement({
               </div>
               {consolidatedRequirements.length === 0 ? (
                 <div className="px-4 py-8 text-center text-sm text-gray-500">
-                  No package-linked ingredient usage is available for this date yet.
+                  No package-linked stock accountability is available for this date yet.
                 </div>
               ) : (
                 <div className="divide-y">
@@ -249,6 +261,9 @@ export function BanquetIngredientRequirement({
                       <div className="mt-1 text-sm text-gray-500">
                         Events: {item.eventNames.join(', ')} • Dishes: {item.linkedDishes.join(', ')}
                       </div>
+                      {item.usageSources.length > 0 ? (
+                        <div className="mt-1 text-xs text-gray-500">Usage: {formatUsageSources(item.usageSources)}</div>
+                      ) : null}
                     </div>
                   ))}
                 </div>

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Edit2, Trash2, Save, Search, Eye, ChefHat, Calculator, ChevronDown, ChevronRight, X, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, Search, Eye, ChevronDown, ChevronRight, X, CheckCircle2, AlertTriangle } from 'lucide-react';
 import {
   Dish,
   LegacyMenuPackageChefEstimate,
   MenuPackage,
+  MenuPackageCommercialPricing,
   MenuPackageChoiceGroup,
   MenuPackageChoiceGroupCostingMethod,
   MenuPackageDish,
@@ -59,10 +60,10 @@ type DishPackageReadiness = {
 
 type BuilderTab = 'package' | 'menu-items' | 'menu-estimate' | 'cost-summary';
 
-const BUILDER_TABS: Array<{ id: BuilderTab; label: string }> = [
-  { id: 'menu-items', label: 'Build' },
-  { id: 'menu-estimate', label: 'Package Cost Engineering' },
-  { id: 'cost-summary', label: 'Review' },
+const BUILDER_TABS: Array<{ id: BuilderTab; step: string; label: string }> = [
+  { id: 'menu-items', step: 'Step 1', label: 'Build Menu' },
+  { id: 'menu-estimate', step: 'Step 2', label: 'Commercial Costing' },
+  { id: 'cost-summary', step: 'Step 3', label: 'Review & Approve' },
 ];
 
 const CHOICE_GROUP_COSTING_METHOD_LABELS: Record<MenuPackageChoiceGroupCostingMethod, string> = {
@@ -95,7 +96,7 @@ const compactPrimaryButtonClass =
 const compactOutlineAccentButtonClass =
   'inline-flex h-8 items-center justify-center gap-1 rounded border border-orange-300 bg-white px-2.5 text-xs font-medium text-orange-700 hover:bg-orange-50 disabled:bg-slate-100';
 
-const TARGET_FOOD_COST_PERCENT = 30;
+const TARGET_FOOD_COST_PERCENT = 70;
 const TARGET_MARGIN_PERCENT = 100 - TARGET_FOOD_COST_PERCENT;
 
 type PackageCategoryRequirement = {
@@ -121,13 +122,14 @@ type CostEngineeringLine = {
   type: 'Fixed' | 'Choice';
   name: string;
   detail: string;
+  itemTypeLabel: string;
   readiness: DishPackageReadiness;
   estimateQty: number;
   selectedUnit: string;
   rateUnit: string;
   unitCost: number;
-  qtyPerGuestLabel: string;
-  costPerGuest: number;
+  statusLabel: string;
+  statusClassName: string;
   totalCost: number;
   impactPercent: number;
   conversionValid: boolean;
@@ -153,7 +155,31 @@ const PACKAGE_CATEGORY_REQUIREMENTS: PackageCategoryRequirement[] = [
   { id: 'beverage', label: 'Beverage', keywords: ['beverage', 'drink', 'juice', 'tea'], preferChoiceGroup: true, groupName: 'Beverage Choice' },
 ];
 
+const SELECTED_MENU_CATEGORY_META = [
+  { id: 'main-course', label: 'Main Course' },
+  { id: 'rice', label: 'Rice/Biryani' },
+  { id: 'bread', label: 'Bread/Naan' },
+  { id: 'salad', label: 'Salad' },
+  { id: 'dessert', label: 'Dessert' },
+  { id: 'beverage', label: 'Beverage' },
+  { id: 'other', label: 'Other' },
+] as const;
+
+type SelectedMenuCategoryId = (typeof SELECTED_MENU_CATEGORY_META)[number]['id'];
+
 const normalizeComparableText = (value?: string) => (value || '').toLowerCase().replace(/[-_]+/g, ' ');
+
+const getSelectedMenuCategoryMeta = (value?: string): (typeof SELECTED_MENU_CATEGORY_META)[number] => {
+  const searchable = normalizeComparableText(value);
+  const matchedRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) =>
+    requirement.keywords.some((keyword) => searchable.includes(normalizeComparableText(keyword))),
+  );
+
+  return (
+    SELECTED_MENU_CATEGORY_META.find((category) => category.id === matchedRequirement?.id) ||
+    SELECTED_MENU_CATEGORY_META.find((category) => category.id === 'other')!
+  );
+};
 
 const dishMatchesRequirement = (dish: Dish, requirement: PackageCategoryRequirement) => {
   const searchable = normalizeComparableText(`${dish.dishName} ${dish.category} ${dish.cuisineName} ${dish.preparationArea}`);
@@ -308,7 +334,7 @@ const getDishPackageReadiness = (
         status: 'purchase-link-missing',
         label: DISH_READINESS_LABELS['purchase-link-missing'],
         canAdd: false,
-        reason: 'Purchased ready dishes must link to one active purchase item in Dish Master.',
+        reason: 'Purchase cost required.',
       };
     }
 
@@ -318,7 +344,7 @@ const getDishPackageReadiness = (
         status: 'purchase-item-inactive',
         label: DISH_READINESS_LABELS['purchase-item-inactive'],
         canAdd: false,
-        reason: 'Linked purchase item must be active before this dish can be saved in a package.',
+        reason: 'Purchase cost required.',
       };
     }
 
@@ -327,7 +353,7 @@ const getDishPackageReadiness = (
         status: 'recipe-incomplete',
         label: 'Issue UOM Missing',
         canAdd: false,
-        reason: 'Linked purchase item must have an issue/base UOM for package costing.',
+        reason: 'Purchase cost required.',
       };
     }
 
@@ -336,7 +362,7 @@ const getDishPackageReadiness = (
         status: 'cost-not-calculated',
         label: DISH_READINESS_LABELS['cost-not-calculated'],
         canAdd: false,
-        reason: 'Linked purchase item must have a current rate or average cost for package costing.',
+        reason: 'Purchase cost required.',
       };
     }
 
@@ -359,13 +385,13 @@ const getDishPackageReadiness = (
 
   const recipe = recipeByDishId.get(dish.id);
   if (!recipe) {
-    return {
-      status: 'recipe-missing',
-      label: DISH_READINESS_LABELS['recipe-missing'],
-      canAdd: false,
-      reason: 'Recipe must be completed and costed before this dish can be added to a package.',
-    };
-  }
+      return {
+        status: 'recipe-missing',
+        label: DISH_READINESS_LABELS['recipe-missing'],
+        canAdd: false,
+        reason: 'Complete recipe costing first.',
+      };
+    }
 
   if (recipe.status === 'inactive') {
     return {
@@ -379,13 +405,13 @@ const getDishPackageReadiness = (
   const yieldQuantity = Number(recipe.yieldQuantity ?? recipe.yields);
   const hasYield = Number.isFinite(yieldQuantity) && yieldQuantity > 0 && Boolean(recipe.yieldUnitId || recipe.yieldUnit);
   if (!recipe.ingredients?.length || !hasYield) {
-    return {
-      status: 'recipe-incomplete',
-      label: DISH_READINESS_LABELS['recipe-incomplete'],
-      canAdd: false,
-      reason: 'Recipe must have ingredients, yield quantity, and yield UOM before this dish can be added.',
-    };
-  }
+      return {
+        status: 'recipe-incomplete',
+        label: DISH_READINESS_LABELS['recipe-incomplete'],
+        canAdd: false,
+        reason: 'Complete recipe costing first.',
+      };
+    }
 
   const hasMissingIngredientCost = recipe.ingredients.some((ingredient) => {
     const costPerUnit = Number(ingredient.unitCost ?? ingredient.costPerUnit);
@@ -394,13 +420,13 @@ const getDishPackageReadiness = (
   });
   const unitCost = getRecipeCostPerYieldUnit(recipe);
   if (hasMissingIngredientCost || unitCost <= 0) {
-    return {
-      status: 'cost-not-calculated',
-      label: DISH_READINESS_LABELS['cost-not-calculated'],
-      canAdd: false,
-      reason: 'Recipe cost must be updated before this dish can be added to a package.',
-    };
-  }
+      return {
+        status: 'cost-not-calculated',
+        label: DISH_READINESS_LABELS['cost-not-calculated'],
+        canAdd: false,
+        reason: 'Complete recipe costing first.',
+      };
+    }
 
   return {
     status: 'ready',
@@ -422,6 +448,78 @@ const getPackageDishEstimateUnit = (
   getEstimateUnitCode(packageDish.unit, units) ||
   packageDish.unit ||
   'pcs';
+
+const getPackageLineTypeLabel = (dish: Dish | undefined) => {
+  if (!dish) {
+    return 'Menu Item';
+  }
+
+  if (dish.productionType === 'purchased-ready') {
+    return 'Purchased Ready';
+  }
+
+  if (isRecipeBasedPackageDish(dish)) {
+    return 'Recipe Based';
+  }
+
+  if (normalizeDishSourceType(dish) === 'outsourced') {
+    return 'Service Item';
+  }
+
+  return 'Menu Item';
+};
+
+const getCommercialStatus = (
+  readiness: DishPackageReadiness,
+  sellingPricePerUnit: number,
+  unitCost: number,
+) => {
+  if (!readiness.canAdd) {
+    return {
+      label: readiness.reason,
+      className: 'border-red-200 bg-red-50 text-red-700',
+    };
+  }
+
+  if (sellingPricePerUnit <= 0) {
+    return {
+      label: 'Selling price required.',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  if (sellingPricePerUnit < unitCost) {
+    return {
+      label: 'Loss Making',
+      className: 'border-red-200 bg-red-50 text-red-700',
+    };
+  }
+
+  const foodCostPercent = sellingPricePerUnit > 0 ? (unitCost / sellingPricePerUnit) * 100 : 0;
+  if (foodCostPercent > TARGET_FOOD_COST_PERCENT) {
+    return {
+      label: 'Low Margin',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+
+  return {
+    label: 'Healthy',
+    className: 'border-green-200 bg-green-50 text-green-700',
+  };
+};
+
+const getPackageCommercialStatus = (costPerGuest: number, sellingPerGuest: number) =>
+  getCommercialStatus(
+    {
+      status: 'ready',
+      label: DISH_READINESS_LABELS.ready,
+      canAdd: true,
+      reason: 'Package is fully available for sale.',
+    },
+    sellingPerGuest,
+    costPerGuest,
+  );
 
 const getPackageDishEstimateCostPerUnit = (
   packageDish: MenuPackageDish,
@@ -904,12 +1002,14 @@ export function MenuPackageBuilder({
   const [formPackageType, setFormPackageType] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formBaselineGuests, setFormBaselineGuests] = useState(100);
-  const [formSellingPricePerHead, setFormSellingPricePerHead] = useState(0);
+  const [formSellingPricePerGuest, setFormSellingPricePerGuest] = useState(0);
   const [formStatus, setFormStatus] = useState<'draft' | 'approved' | 'inactive'>('draft');
   const [packageDishes, setPackageDishes] = useState<MenuPackageDish[]>([]);
   const [choiceGroups, setChoiceGroups] = useState<MenuPackageChoiceGroup[]>([]);
   const [selectedAvailableDishIds, setSelectedAvailableDishIds] = useState<string[]>([]);
   const [activeChoiceGroupId, setActiveChoiceGroupId] = useState<string | null>(null);
+  const [pendingAddDishIds, setPendingAddDishIds] = useState<string[]>([]);
+  const [pendingAddChoiceGroupId, setPendingAddChoiceGroupId] = useState('');
   const [itemSearchTerm, setItemSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [cuisineFilter, setCuisineFilter] = useState('all');
@@ -937,6 +1037,101 @@ export function MenuPackageBuilder({
   const [menuEstimate, setMenuEstimate] = useState<MenuPackageMenuEstimate>(() =>
     buildMenuEstimate(undefined, [], [], 100, userName, units, recipeByDishId),
   );
+
+  const getFixedEstimateQuantityForState = (
+    sourceEstimate: MenuPackageMenuEstimate,
+    dish: MenuPackageDish,
+    baselineGuests: number,
+  ) => sourceEstimate.fixedItemQuantities[dish.dishId] ?? dish.quantityPerHead * Math.max(Number(baselineGuests) || 0, 1);
+
+  const getFixedEstimateRateUnitForState = (dish: MenuPackageDish) =>
+    getPackageDishEstimateUnit(dish, units, recipeByDishId);
+
+  const getFixedEstimateSelectedUnitForState = (sourceEstimate: MenuPackageMenuEstimate, dish: MenuPackageDish) =>
+    getEstimateUnitCode(sourceEstimate.fixedItemUnits?.[dish.dishId], units) || getFixedEstimateRateUnitForState(dish);
+
+  const getChoiceEstimateSelectionForState = (
+    choiceGroup: MenuPackageChoiceGroup,
+    sourceEstimate: MenuPackageMenuEstimate,
+  ) => {
+    if (choiceGroup.costingMethod === 'default-option' && choiceGroup.defaultDishId) {
+      return choiceGroup.defaultDishId;
+    }
+
+    const storedSelection = sourceEstimate.choiceGroupSelections?.[choiceGroup.id];
+    if (storedSelection && choiceGroup.dishes.some((dish) => dish.dishId === storedSelection)) {
+      return storedSelection;
+    }
+
+    return getChoiceGroupDefaultSelectionId(choiceGroup) || '';
+  };
+
+  const getChoiceRepresentativeDishForState = (
+    choiceGroup: MenuPackageChoiceGroup,
+    sourceEstimate: MenuPackageMenuEstimate,
+  ) =>
+    choiceGroup.dishes.find((dish) => dish.dishId === getChoiceEstimateSelectionForState(choiceGroup, sourceEstimate)) ||
+    getChoiceGroupDefaultDish(choiceGroup);
+
+  const getChoiceEstimateQuantityForState = (
+    sourceEstimate: MenuPackageMenuEstimate,
+    choiceGroup: MenuPackageChoiceGroup,
+    baselineGuests: number,
+  ) =>
+    sourceEstimate.choiceGroupQuantities[choiceGroup.id] ??
+    getChoiceGroupDefaultEstimateQuantityPerHead(choiceGroup, units, recipeByDishId) * Math.max(Number(baselineGuests) || 0, 1);
+
+  const getChoiceEstimateRateUnitForState = (
+    choiceGroup: MenuPackageChoiceGroup,
+    sourceEstimate: MenuPackageMenuEstimate,
+  ) =>
+    getChoiceRepresentativeDishForState(choiceGroup, sourceEstimate)
+      ? getPackageDishEstimateUnit(getChoiceRepresentativeDishForState(choiceGroup, sourceEstimate)!, units, recipeByDishId)
+      : 'pcs';
+
+  const getChoiceEstimateSelectedUnitForState = (
+    sourceEstimate: MenuPackageMenuEstimate,
+    choiceGroup: MenuPackageChoiceGroup,
+  ) =>
+    getEstimateUnitCode(sourceEstimate.choiceGroupUnits?.[choiceGroup.id], units) ||
+    getChoiceEstimateRateUnitForState(choiceGroup, sourceEstimate);
+
+  const calculateFixedItemTotalCostForState = (
+    sourceEstimate: MenuPackageMenuEstimate,
+    dish: MenuPackageDish,
+    baselineGuests: number,
+  ) => {
+    const quantityInRateUnit = convertPackageEstimateQuantity(
+      getFixedEstimateQuantityForState(sourceEstimate, dish, baselineGuests),
+      getFixedEstimateSelectedUnitForState(sourceEstimate, dish),
+      getFixedEstimateRateUnitForState(dish),
+      units,
+    );
+
+    return quantityInRateUnit === null ? 0 : getPackageDishEstimateCostPerUnit(dish, units, recipeByDishId) * quantityInRateUnit;
+  };
+
+  const calculateChoiceGroupTotalCostForState = (
+    sourceEstimate: MenuPackageMenuEstimate,
+    choiceGroup: MenuPackageChoiceGroup,
+    baselineGuests: number,
+  ) => {
+    const quantityInRateUnit = convertPackageEstimateQuantity(
+      getChoiceEstimateQuantityForState(sourceEstimate, choiceGroup, baselineGuests),
+      getChoiceEstimateSelectedUnitForState(sourceEstimate, choiceGroup),
+      getChoiceEstimateRateUnitForState(choiceGroup, sourceEstimate),
+      units,
+    );
+
+    return quantityInRateUnit === null
+      ? 0
+      : getChoiceGroupMenuEstimateUnitCost(
+          choiceGroup,
+          getChoiceEstimateSelectionForState(choiceGroup, sourceEstimate),
+          units,
+          recipeByDishId,
+        ) * quantityInRateUnit;
+  };
 
   const approvedDishes = useMemo(
     () =>
@@ -1057,12 +1252,14 @@ export function MenuPackageBuilder({
     setFormPackageType(activeMenuPackageTypes[0]?.code || '');
     setFormDescription('');
     setFormBaselineGuests(100);
-    setFormSellingPricePerHead(0);
+    setFormSellingPricePerGuest(0);
     setFormStatus('draft');
     setPackageDishes([]);
     setChoiceGroups([]);
     setSelectedAvailableDishIds([]);
     setActiveChoiceGroupId(null);
+    setPendingAddDishIds([]);
+    setPendingAddChoiceGroupId('');
     setActiveBuilderTab('menu-items');
     setFixedItemsOpen(true);
     setChoiceGroupsOpen(true);
@@ -1261,34 +1458,35 @@ export function MenuPackageBuilder({
     const hydratedChoiceGroups = (pkg.choiceGroups || []).map((choiceGroup) =>
       hydrateChoiceGroup(choiceGroup, pkg.menuEstimate, baselineGuests),
     );
+    const hydratedMenuEstimate = buildMenuEstimate(
+      pkg.menuEstimate ?? pkg.chefEstimate,
+      hydratedDishes,
+      hydratedChoiceGroups,
+      pkg.minimumGuests || 100,
+      userName,
+      units,
+      recipeByDishId,
+    );
 
     setEditingPackage(pkg);
     setFormPackageName(pkg.packageName);
     setFormPackageType(pkg.packageType);
     setFormDescription(pkg.description || '');
     setFormBaselineGuests(baselineGuests);
-    setFormSellingPricePerHead(pkg.sellingPricePerHead);
+    setFormSellingPricePerGuest(pkg.sellingPricePerHead || 0);
     setFormStatus(pkg.status);
     setPackageDishes(hydratedDishes);
     setChoiceGroups(hydratedChoiceGroups);
     setActiveChoiceGroupId(hydratedChoiceGroups[0]?.id || null);
+    setPendingAddDishIds([]);
+    setPendingAddChoiceGroupId('');
     setSelectedAvailableDishIds([]);
     setActiveBuilderTab('menu-items');
     setFixedItemsOpen(true);
     setChoiceGroupsOpen(true);
     setChoiceGroupEditorOpen(false);
     resetMenuItemFilters();
-    setMenuEstimate(
-      buildMenuEstimate(
-        pkg.menuEstimate ?? pkg.chefEstimate,
-        hydratedDishes,
-        hydratedChoiceGroups,
-        pkg.minimumGuests || 100,
-        userName,
-        units,
-        recipeByDishId,
-      ),
-    );
+    setMenuEstimate(hydratedMenuEstimate);
     setViewMode(nextViewMode);
     setDialogOpen(true);
   };
@@ -1327,6 +1525,20 @@ export function MenuPackageBuilder({
 
   const handleClearDishSelection = () => {
     setSelectedAvailableDishIds([]);
+  };
+
+  const openAddDishDialog = (dishIds: string[]) => {
+    if (viewMode || dishIds.length === 0) {
+      return;
+    }
+
+    setPendingAddDishIds(dishIds);
+    setPendingAddChoiceGroupId(activeChoiceGroupId || choiceGroups[0]?.id || '');
+  };
+
+  const closeAddDishDialog = () => {
+    setPendingAddDishIds([]);
+    setPendingAddChoiceGroupId('');
   };
 
   const addDishesToFixedItems = (dishIds: string[]) => {
@@ -1381,6 +1593,15 @@ export function MenuPackageBuilder({
 
   const handleQuickAddToFixedItems = (dishId: string) => {
     addDishesToFixedItems([dishId]);
+  };
+
+  const handleConfirmAddToFixedItems = () => {
+    if (pendingAddDishIds.length === 0) {
+      return;
+    }
+
+    addDishesToFixedItems(pendingAddDishIds);
+    closeAddDishDialog();
   };
 
   const handleUpdateDish = (index: number, field: 'dishId' | 'variantId' | 'quantityPerHead', value: string | number) => {
@@ -1580,6 +1801,21 @@ export function MenuPackageBuilder({
     }
 
     addDishesToChoiceGroup(activeChoiceGroupId, [dishId]);
+  };
+
+  const handleConfirmAddToChoiceGroup = () => {
+    if (pendingAddDishIds.length === 0) {
+      return;
+    }
+
+    if (!pendingAddChoiceGroupId) {
+      toast.error('Create or select a choice group first');
+      return;
+    }
+
+    setActiveChoiceGroupId(pendingAddChoiceGroupId);
+    addDishesToChoiceGroup(pendingAddChoiceGroupId, pendingAddDishIds);
+    closeAddDishDialog();
   };
 
   const handleApplyAssistantPlan = () => {
@@ -1803,33 +2039,6 @@ export function MenuPackageBuilder({
     resetTypeForm();
   };
 
-  const calculateChoiceGroupPlanningCost = (choiceGroup: MenuPackageChoiceGroup) => {
-    if (choiceGroup.dishes.length === 0) {
-      return 0;
-    }
-
-    if (choiceGroup.costingMethod === 'highest-cost') {
-      return Math.max(...choiceGroup.dishes.map((dish) => dish.costPerHead));
-    }
-
-    if (choiceGroup.costingMethod === 'average-cost') {
-      return (
-        choiceGroup.dishes.reduce((sum, dish) => sum + dish.costPerHead, 0) /
-        Math.max(choiceGroup.dishes.length, 1)
-      );
-    }
-
-    const defaultDish = choiceGroup.dishes.find((dish) => dish.dishId === choiceGroup.defaultDishId);
-    return defaultDish?.costPerHead || choiceGroup.dishes[0]?.costPerHead || 0;
-  };
-
-  const calculateFixedItemsCostPerHead = () => packageDishes.reduce((sum, dish) => sum + dish.costPerHead, 0);
-
-  const calculateChoiceGroupCostPerHead = () =>
-    choiceGroups.reduce((sum, choiceGroup) => sum + calculateChoiceGroupPlanningCost(choiceGroup), 0);
-
-  const calculateBaseRecipeCostPerHead = () => calculateFixedItemsCostPerHead() + calculateChoiceGroupCostPerHead();
-
   const updateMenuEstimate = (updater: (current: MenuPackageMenuEstimate) => MenuPackageMenuEstimate) => {
     setMenuEstimate((current) => ({
       ...updater(current),
@@ -1954,44 +2163,28 @@ export function MenuPackageBuilder({
   const getBaselineGuestDivisor = () => Math.max(Number(formBaselineGuests) || 0, 1);
 
   const getMenuEstimateFixedQuantity = (dish: MenuPackageDish) =>
-    menuEstimate.fixedItemQuantities[dish.dishId] ?? dish.quantityPerHead * getBaselineGuestDivisor();
+    getFixedEstimateQuantityForState(menuEstimate, dish, formBaselineGuests);
 
   const getMenuEstimateChoiceQuantity = (choiceGroup: MenuPackageChoiceGroup) =>
-    menuEstimate.choiceGroupQuantities[choiceGroup.id] ??
-    getChoiceGroupDefaultEstimateQuantityPerHead(choiceGroup, units, recipeByDishId) * getBaselineGuestDivisor();
+    getChoiceEstimateQuantityForState(menuEstimate, choiceGroup, formBaselineGuests);
 
-  const getMenuEstimateChoiceSelection = (choiceGroup: MenuPackageChoiceGroup) => {
-    if (choiceGroup.costingMethod === 'default-option' && choiceGroup.defaultDishId) {
-      return choiceGroup.defaultDishId;
-    }
-
-    const storedSelection = menuEstimate.choiceGroupSelections?.[choiceGroup.id];
-    if (storedSelection && choiceGroup.dishes.some((dish) => dish.dishId === storedSelection)) {
-      return storedSelection;
-    }
-
-    return getChoiceGroupDefaultSelectionId(choiceGroup) || '';
-  };
+  const getMenuEstimateChoiceSelection = (choiceGroup: MenuPackageChoiceGroup) =>
+    getChoiceEstimateSelectionForState(choiceGroup, menuEstimate);
 
   const getChoiceGroupMenuEstimateRepresentativeDish = (choiceGroup: MenuPackageChoiceGroup) =>
-    choiceGroup.dishes.find((dish) => dish.dishId === getMenuEstimateChoiceSelection(choiceGroup)) ||
-    getChoiceGroupDefaultDish(choiceGroup);
+    getChoiceRepresentativeDishForState(choiceGroup, menuEstimate);
 
   const getMenuEstimateFixedRateUnit = (dish: MenuPackageDish) =>
-    getPackageDishEstimateUnit(dish, units, recipeByDishId);
+    getFixedEstimateRateUnitForState(dish);
 
   const getMenuEstimateFixedUnit = (dish: MenuPackageDish) =>
-    getEstimateUnitCode(menuEstimate.fixedItemUnits?.[dish.dishId], units) ||
-    getMenuEstimateFixedRateUnit(dish);
+    getFixedEstimateSelectedUnitForState(menuEstimate, dish);
 
   const getMenuEstimateChoiceRateUnit = (choiceGroup: MenuPackageChoiceGroup) =>
-    getChoiceGroupMenuEstimateRepresentativeDish(choiceGroup)
-      ? getPackageDishEstimateUnit(getChoiceGroupMenuEstimateRepresentativeDish(choiceGroup)!, units, recipeByDishId)
-      : 'pcs';
+    getChoiceEstimateRateUnitForState(choiceGroup, menuEstimate);
 
   const getMenuEstimateChoiceUnit = (choiceGroup: MenuPackageChoiceGroup) =>
-    getEstimateUnitCode(menuEstimate.choiceGroupUnits?.[choiceGroup.id], units) ||
-    getMenuEstimateChoiceRateUnit(choiceGroup);
+    getChoiceEstimateSelectedUnitForState(menuEstimate, choiceGroup);
 
   const convertMenuEstimateQuantityToRateUnit = (quantity: number, selectedUnitCode: string, rateUnitCode: string) => {
     const selectedUnit = getEstimateUnitCode(selectedUnitCode, units);
@@ -2004,28 +2197,11 @@ export function MenuPackageBuilder({
   };
 
   const calculateFixedItemMenuEstimateTotalCost = (dish: MenuPackageDish) => {
-    const quantityInRateUnit = convertMenuEstimateQuantityToRateUnit(
-      getMenuEstimateFixedQuantity(dish),
-      getMenuEstimateFixedUnit(dish),
-      getMenuEstimateFixedRateUnit(dish),
-    );
-
-    return quantityInRateUnit === null
-      ? 0
-      : getPackageDishEstimateCostPerUnit(dish, units, recipeByDishId) * quantityInRateUnit;
+    return calculateFixedItemTotalCostForState(menuEstimate, dish, formBaselineGuests);
   };
 
   const calculateChoiceGroupMenuEstimateTotalCost = (choiceGroup: MenuPackageChoiceGroup) => {
-    const quantityInRateUnit = convertMenuEstimateQuantityToRateUnit(
-      getMenuEstimateChoiceQuantity(choiceGroup),
-      getMenuEstimateChoiceUnit(choiceGroup),
-      getMenuEstimateChoiceRateUnit(choiceGroup),
-    );
-
-    return quantityInRateUnit === null
-      ? 0
-      : getChoiceGroupMenuEstimateUnitCost(choiceGroup, getMenuEstimateChoiceSelection(choiceGroup), units, recipeByDishId) *
-          quantityInRateUnit;
+    return calculateChoiceGroupTotalCostForState(menuEstimate, choiceGroup, formBaselineGuests);
   };
 
   const calculateFixedItemMenuEstimateCostPerHead = (dish: MenuPackageDish) =>
@@ -2045,23 +2221,29 @@ export function MenuPackageBuilder({
 
   const calculateTotalMenuCost = () => calculateTotalCostPerHead() * Math.max(formBaselineGuests, 0);
 
+  const calculateTotalPackageSelling = () => Math.max(Number(formSellingPricePerGuest) || 0, 0) * Math.max(formBaselineGuests, 0);
+
+  const calculateSellingPricePerHead = () => Math.max(Number(formSellingPricePerGuest) || 0, 0);
+
+  const calculatePackageProfit = () => calculateTotalPackageSelling() - calculateTotalMenuCost();
+
   const calculateMargin = () => {
-    if (formSellingPricePerHead <= 0) {
+    const totalSelling = calculateTotalPackageSelling();
+    if (totalSelling <= 0) {
       return 0;
     }
 
-    return ((formSellingPricePerHead - calculateTotalCostPerHead()) / formSellingPricePerHead) * 100;
+    return (calculatePackageProfit() / totalSelling) * 100;
   };
 
   const calculateFoodCostPercent = () => {
-    if (formSellingPricePerHead <= 0) {
+    const totalSelling = calculateTotalPackageSelling();
+    if (totalSelling <= 0) {
       return 0;
     }
 
-    return (calculateTotalCostPerHead() / formSellingPricePerHead) * 100;
+    return (calculateTotalMenuCost() / totalSelling) * 100;
   };
-
-  const calculateMenuEstimateVariance = () => calculateTotalCostPerHead() - calculateBaseRecipeCostPerHead();
 
   const getPreparationAreaSummary = () => {
     const summary: Record<string, number> = {};
@@ -2118,7 +2300,7 @@ export function MenuPackageBuilder({
     packageDishes.forEach((dish) => {
       const readiness = getDishPackageReadiness(dishes.find((item) => item.id === dish.dishId), recipeByDishId, purchaseItemsById);
       if (!readiness.canAdd) {
-        issues.push(`Fixed item "${dish.dishName}" is not ready: ${readiness.label}.`);
+        issues.push(`Fixed item "${dish.dishName}": ${readiness.reason}`);
       }
 
       const selectedUnit = getMenuEstimateFixedUnit(dish);
@@ -2128,6 +2310,7 @@ export function MenuPackageBuilder({
           `UOM ${formatUnitLabel(selectedUnit, units)} cannot convert to ${formatUnitLabel(rateUnit, units)} for "${dish.dishName}".`,
         );
       }
+
     });
 
     choiceGroups.forEach((choiceGroup) => {
@@ -2165,7 +2348,7 @@ export function MenuPackageBuilder({
       choiceGroup.dishes.forEach((dish) => {
         const readiness = getDishPackageReadiness(dishes.find((item) => item.id === dish.dishId), recipeByDishId, purchaseItemsById);
         if (!readiness.canAdd) {
-          issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has "${dish.dishName}" not ready: ${readiness.label}.`);
+          issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has "${dish.dishName}": ${readiness.reason}`);
         }
       });
 
@@ -2184,6 +2367,7 @@ export function MenuPackageBuilder({
       ) {
         issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" needs a valid costing basis.`);
       }
+
     });
 
     if (Object.values(menuEstimate.fixedItemQuantities).some((quantity) => quantity < 0)) {
@@ -2192,10 +2376,6 @@ export function MenuPackageBuilder({
 
     if (Object.values(menuEstimate.choiceGroupQuantities).some((quantity) => quantity < 0)) {
       issues.push('Estimated quantity cannot be negative for choice groups.');
-    }
-
-    if (formSellingPricePerHead <= 0) {
-      issues.push('Price per head must be greater than 0.');
     }
 
     const duplicate = menuPackages.find(
@@ -2217,7 +2397,6 @@ export function MenuPackageBuilder({
     formBaselineGuests,
     formPackageName,
     formPackageType,
-    formSellingPricePerHead,
     menuPackages,
     menuEstimate,
     packageDishes,
@@ -2231,7 +2410,7 @@ export function MenuPackageBuilder({
 
     packageDishes.forEach((dish) => {
       if (getPackageDishEstimateCostPerUnit(dish, units, recipeByDishId) <= 0) {
-        issues.push(`Fixed item "${dish.dishName}" has zero recipe cost.`);
+        issues.push(`Recipe cost missing: ${dish.dishName}.`);
       }
 
       if (getMenuEstimateFixedQuantity(dish) === 0) {
@@ -2243,7 +2422,7 @@ export function MenuPackageBuilder({
       if (
         getChoiceGroupMenuEstimateUnitCost(choiceGroup, getMenuEstimateChoiceSelection(choiceGroup), units, recipeByDishId) <= 0
       ) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has zero recipe cost.`);
+        issues.push(`Recipe cost missing: ${choiceGroup.groupName || 'Unnamed'}.`);
       }
 
       if (choiceGroup.required && getMenuEstimateChoiceQuantity(choiceGroup) === 0) {
@@ -2259,17 +2438,23 @@ export function MenuPackageBuilder({
       issues.push('Dessert estimate missing.');
     }
 
-    if (formSellingPricePerHead > 0) {
-      const totalCostPerHead = calculateTotalCostPerHead();
-      const marginPercent = ((formSellingPricePerHead - totalCostPerHead) / formSellingPricePerHead) * 100;
-      const foodCostPercent = (totalCostPerHead / formSellingPricePerHead) * 100;
+    const packageSellingTotal = calculateTotalPackageSelling();
+    const packageSellingPerHead = calculateSellingPricePerHead();
+    if (packageSellingPerHead <= 0) {
+      issues.push('Selling price missing.');
+    } else {
+      const totalMenuCost = calculateTotalMenuCost();
+      const marginPercent = ((packageSellingTotal - totalMenuCost) / packageSellingTotal) * 100;
+      const foodCostPercent = (totalMenuCost / packageSellingTotal) * 100;
 
-      if (marginPercent < TARGET_MARGIN_PERCENT) {
-        issues.push(`Selling price below ${TARGET_MARGIN_PERCENT}% target margin.`);
+      if (packageSellingPerHead < calculateTotalCostPerHead()) {
+        issues.push('Package is loss making.');
+      } else if (marginPercent < TARGET_MARGIN_PERCENT) {
+        issues.push('Low margin.');
       }
 
       if (foodCostPercent > TARGET_FOOD_COST_PERCENT) {
-        issues.push(`Food cost is above ${TARGET_FOOD_COST_PERCENT}% target.`);
+        issues.push('Food cost above target.');
       }
     }
 
@@ -2295,7 +2480,6 @@ export function MenuPackageBuilder({
     choiceGroups,
     eligibleDishById,
     formBaselineGuests,
-    formSellingPricePerHead,
     menuEstimate,
     packageDishes,
     packageDishLines,
@@ -2439,13 +2623,19 @@ export function MenuPackageBuilder({
           quantityInRateUnit
       );
     }, 0);
-
     if (invalidSavedUnitLine) {
       toast.error(`Selected UOM cannot convert for ${invalidSavedUnitLine}`);
       return;
     }
 
     const totalCostPerHead = (fixedItemsTotalCost + choiceGroupsTotalCost) / Math.max(formBaselineGuests, 1);
+    const totalSellingPerHead = Math.max(Number(formSellingPricePerGuest) || 0, 0);
+    const normalizedCommercialPricing: MenuPackageCommercialPricing = {
+      fixedItemSellingPrices: {},
+      choiceGroupSellingPrices: {},
+      updatedBy: userName,
+      updatedAt: new Date(),
+    };
 
     const packageData: MenuPackage = {
       id: editingPackage?.id || `package-${Date.now()}`,
@@ -2456,8 +2646,9 @@ export function MenuPackageBuilder({
       choiceGroups: normalizedChoiceGroups,
       minimumGuests: formBaselineGuests,
       totalCostPerHead,
-      sellingPricePerHead: formSellingPricePerHead,
+      sellingPricePerHead: totalSellingPerHead,
       menuEstimate: normalizedMenuEstimate,
+      commercialPricing: normalizedCommercialPricing,
       status: formStatus,
       description: formDescription,
       createdBy: editingPackage?.createdBy || userName,
@@ -2487,19 +2678,21 @@ export function MenuPackageBuilder({
     }
   };
 
-  const baseRecipeCostPerHead = calculateBaseRecipeCostPerHead();
   const menuEstimateFixedCostPerHead = calculateMenuEstimateFixedItemsCostPerHead();
   const menuEstimateChoiceCostPerHead = calculateMenuEstimateChoiceGroupCostPerHead();
   const menuEstimateCostPerHead = calculateTotalCostPerHead();
   const menuEstimateTotalCost = calculateTotalMenuCost();
-  const menuEstimateVariance = calculateMenuEstimateVariance();
+  const packageSellingTotal = calculateTotalPackageSelling();
+  const packageSellingPerHead = calculateSellingPricePerHead();
+  const packageProfit = calculatePackageProfit();
+  const packageProfitPercent = calculateMargin();
+  const packageFoodCostPercent = calculateFoodCostPercent();
+  const packageMarginPerHead = packageSellingPerHead - menuEstimateCostPerHead;
+  const canApprovePackage = validationErrors.length === 0 && packageSellingPerHead > 0;
   const validationIssueCount = validationErrors.length + validationWarnings.length;
   const validationStatusLabel = validationErrors.length > 0 ? 'Blocked' : validationWarnings.length > 0 ? 'Review' : 'Healthy';
   const validationStatusClass =
     validationErrors.length > 0 ? 'text-red-600' : validationWarnings.length > 0 ? 'text-amber-600' : 'text-green-600';
-  const recommendedSellingPricePerHead =
-    menuEstimateCostPerHead > 0 ? menuEstimateCostPerHead / (TARGET_FOOD_COST_PERCENT / 100) : 0;
-  const sellingPriceGap = Math.max(recommendedSellingPricePerHead - formSellingPricePerHead, 0);
   const totalSelectedLines = packageDishLines.length;
   const sortedPreparationAreas = Object.entries(preparationAreaCounts).sort((left, right) => right[1] - left[1]);
   const dominantPreparationArea = sortedPreparationAreas[0];
@@ -2520,27 +2713,33 @@ export function MenuPackageBuilder({
       const selectedUnit = getMenuEstimateFixedUnit(dish);
       const rateUnit = getMenuEstimateFixedRateUnit(dish);
       const conversionValid = convertMenuEstimateQuantityToRateUnit(1, selectedUnit, rateUnit) !== null;
+      const sourceDish = dishes.find((item) => item.id === dish.dishId);
       const unitCost = getPackageDishEstimateCostPerUnit(dish, units, recipeByDishId);
       const totalCost = calculateFixedItemMenuEstimateTotalCost(dish);
-      const costPerGuest = calculateFixedItemMenuEstimateCostPerHead(dish);
       const readiness = getDishReadiness(dish.dishId);
+      const commercialStatus = !readiness.canAdd
+        ? { label: readiness.label, className: 'border-red-200 bg-red-50 text-red-700' }
+        : unitCost <= 0 || estimateQty <= 0 || !conversionValid
+          ? { label: 'Missing Cost', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+          : { label: 'Ready', className: 'border-green-200 bg-green-50 text-green-700' };
       return {
         id: `fixed-${dish.dishId}`,
         sourceId: dish.dishId,
         type: 'Fixed' as const,
         name: dish.dishName,
         detail: `${dish.variantLabel || 'Default'} | ${dish.preparationArea.replace(/-/g, ' ')}`,
+        itemTypeLabel: getPackageLineTypeLabel(sourceDish),
         readiness,
         estimateQty,
         selectedUnit,
         rateUnit,
         unitCost,
-        qtyPerGuestLabel: formatBaselineQuantityPerGuest(estimateQty, formBaselineGuests, selectedUnit, units),
-        costPerGuest,
+        statusLabel: commercialStatus.label,
+        statusClassName: commercialStatus.className,
         totalCost,
         impactPercent: menuEstimateTotalCost > 0 ? (totalCost / menuEstimateTotalCost) * 100 : 0,
         conversionValid,
-        hasWarning: unitCost <= 0 || estimateQty <= 0 || !conversionValid,
+        hasWarning: unitCost <= 0 || estimateQty <= 0 || !conversionValid || !readiness.canAdd,
       };
     }),
     ...choiceGroups.map((choiceGroup) => {
@@ -2556,7 +2755,6 @@ export function MenuPackageBuilder({
         recipeByDishId,
       );
       const totalCost = calculateChoiceGroupMenuEstimateTotalCost(choiceGroup);
-      const costPerGuest = calculateChoiceGroupMenuEstimateCostPerHead(choiceGroup);
       const readiness =
         choiceGroup.dishes.length === 0
           ? ({
@@ -2572,19 +2770,28 @@ export function MenuPackageBuilder({
               canAdd: true,
               reason: 'All choice-group dishes are complete and costed.',
             } as DishPackageReadiness);
+      const commercialStatus = !readiness.canAdd
+        ? { label: readiness.label, className: 'border-red-200 bg-red-50 text-red-700' }
+        : unitCost <= 0 || (choiceGroup.required && estimateQty <= 0) || !conversionValid
+          ? { label: 'Missing Cost', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+          : { label: 'Ready', className: 'border-green-200 bg-green-50 text-green-700' };
+      const lineTypeSet = new Set(
+        choiceGroup.dishes.map((dish) => getPackageLineTypeLabel(dishes.find((item) => item.id === dish.dishId))),
+      );
       return {
         id: `choice-${choiceGroup.id}`,
         sourceId: choiceGroup.id,
         type: 'Choice' as const,
         name: choiceGroup.groupName || 'Unnamed Group',
         detail: `${CHOICE_GROUP_COSTING_METHOD_LABELS[choiceGroup.costingMethod]} | ${representativeDish?.dishName || 'No representative item'} | ${formatChoiceGroupDishSummary(choiceGroup, 3, true)}`,
+        itemTypeLabel: lineTypeSet.size === 1 ? Array.from(lineTypeSet)[0] : 'Mixed Choice',
         readiness,
         estimateQty,
         selectedUnit,
         rateUnit,
         unitCost,
-        qtyPerGuestLabel: formatBaselineQuantityPerGuest(estimateQty, formBaselineGuests, selectedUnit, units),
-        costPerGuest,
+        statusLabel: commercialStatus.label,
+        statusClassName: commercialStatus.className,
         totalCost,
         impactPercent: menuEstimateTotalCost > 0 ? (totalCost / menuEstimateTotalCost) * 100 : 0,
         conversionValid,
@@ -2592,7 +2799,8 @@ export function MenuPackageBuilder({
           unitCost <= 0 ||
           (choiceGroup.required && estimateQty <= 0) ||
           !conversionValid ||
-          (choiceGroup.costingMethod === 'default-option' && !representativeDish),
+          (choiceGroup.costingMethod === 'default-option' && !representativeDish) ||
+          !readiness.canAdd,
       };
     }),
   ];
@@ -2677,16 +2885,16 @@ export function MenuPackageBuilder({
     },
     {
       label: 'Selling Price Defined',
-      passed: formSellingPricePerHead > 0,
-      detail: formSellingPricePerHead > 0 ? `Rs. ${formSellingPricePerHead.toFixed(2)}/head` : 'Enter price/head',
+      passed: packageSellingPerHead > 0,
+      detail: packageSellingPerHead > 0 ? `Rs. ${packageSellingPerHead.toFixed(2)}/guest` : 'Enter selling price / guest',
     },
     {
-      label: 'Margin Above Target',
-      passed: formSellingPricePerHead > 0 && calculateMargin() >= TARGET_MARGIN_PERCENT,
+      label: 'Profit Above Target',
+      passed: packageSellingTotal > 0 && packageProfitPercent >= TARGET_MARGIN_PERCENT,
       detail:
-        formSellingPricePerHead > 0
-          ? `${calculateMargin().toFixed(1)}% margin vs ${TARGET_MARGIN_PERCENT}% target`
-          : 'Price pending',
+        packageSellingTotal > 0
+          ? `${packageProfitPercent.toFixed(1)}% profit vs ${TARGET_MARGIN_PERCENT}% target`
+          : 'Selling pending',
     },
     {
       label: 'Choice Groups Costed',
@@ -2722,21 +2930,21 @@ export function MenuPackageBuilder({
     });
   }
 
-  if (formSellingPricePerHead > 0 && calculateMargin() < TARGET_MARGIN_PERCENT) {
+  if (packageSellingTotal > 0 && packageProfitPercent < TARGET_MARGIN_PERCENT) {
     assistantIssues.push({
       id: 'low-margin',
       severity: 'warning',
       title: 'Low margin',
-      detail: `${calculateMargin().toFixed(1)}% margin. Raise price/head or replace high-cost dishes.`,
+      detail: `${packageProfitPercent.toFixed(1)}% package margin. Raise selling price / guest or reduce cost.`,
     });
   }
 
-  if (formSellingPricePerHead > 0 && calculateFoodCostPercent() > TARGET_FOOD_COST_PERCENT) {
+  if (packageSellingTotal > 0 && packageFoodCostPercent > TARGET_FOOD_COST_PERCENT) {
     assistantIssues.push({
       id: 'high-food-cost',
       severity: 'warning',
       title: 'High food cost',
-      detail: `${calculateFoodCostPercent().toFixed(1)}% food cost is above target.`,
+      detail: `${packageFoodCostPercent.toFixed(1)}% food cost is above target.`,
     });
   }
 
@@ -2828,7 +3036,7 @@ export function MenuPackageBuilder({
     suggestedCategoryGaps.length > 0;
   const hasCostingReviewIssue =
     menuEstimateCostPerHead <= 0 ||
-    formSellingPricePerHead <= 0 ||
+    packageSellingTotal <= 0 ||
     validationWarnings.some((issue) => /cost|margin|price|quantity/i.test(issue));
   const reviewVerdict =
     packageRecipeIssueCount > 0
@@ -2851,9 +3059,127 @@ export function MenuPackageBuilder({
             }
           : {
               label: 'Ready for Sale',
-              detail: 'Menu, recipe readiness, costing, and selling checks are complete.',
-              className: 'border-green-200 bg-green-50 text-green-800',
-            };
+          detail: 'Menu, recipe readiness, costing, and selling checks are complete.',
+          className: 'border-green-200 bg-green-50 text-green-800',
+        };
+  const packageCommercialStatus = getPackageCommercialStatus(menuEstimateCostPerHead, packageSellingPerHead);
+  const baselineGuestDivisor = Math.max(formBaselineGuests, 1);
+  const selectedMenuRows = [
+    ...packageDishes.map((dish, index) => {
+      const sourceDish = dishes.find((item) => item.id === dish.dishId);
+      const costPerGuest = calculateFixedItemMenuEstimateCostPerHead(dish);
+      const readiness = getDishReadiness(dish.dishId);
+      const commercialStatus = !readiness.canAdd
+        ? { label: readiness.label, className: 'border-red-200 bg-red-50 text-red-700' }
+        : costPerGuest <= 0
+          ? { label: 'Missing Cost', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+          : { label: 'Ready', className: 'border-green-200 bg-green-50 text-green-700' };
+      const categoryMeta = getSelectedMenuCategoryMeta(
+        `${dish.dishName} ${sourceDish?.category || ''} ${sourceDish?.cuisineName || ''} ${dish.preparationArea}`,
+      );
+
+      return {
+        id: `fixed-${dish.dishId}-${index}`,
+        rowType: 'fixed' as const,
+        categoryId: categoryMeta.id as SelectedMenuCategoryId,
+        categoryLabel: categoryMeta.label,
+        itemName: dish.dishName,
+        itemType: 'Fixed Item',
+        quantityPerGuest: dish.quantityPerHead,
+        unit: dish.unit,
+        costPerGuest,
+        readiness,
+        statusLabel: commercialStatus.label,
+        statusClassName: commercialStatus.className,
+        onEdit: () => setFixedItemsOpen(true),
+        onRemove: () => handleRemoveDish(index),
+      };
+    }),
+    ...choiceGroups.map((choiceGroup) => {
+      const representativeDish = getChoiceGroupMenuEstimateRepresentativeDish(choiceGroup);
+      const readiness =
+        choiceGroup.dishes.length === 0
+          ? ({
+              status: 'recipe-incomplete',
+              label: DISH_READINESS_LABELS['recipe-incomplete'],
+              canAdd: false,
+              reason: 'Choice group must contain at least one ready dish.',
+            } as DishPackageReadiness)
+          : choiceGroup.dishes.map((dish) => getDishReadiness(dish.dishId)).find((item) => !item.canAdd) ||
+            ({
+              status: 'ready',
+              label: DISH_READINESS_LABELS.ready,
+              canAdd: true,
+              reason: 'All choice-group dishes are complete and costed.',
+            } as DishPackageReadiness);
+      const unitCost = getChoiceGroupMenuEstimateUnitCost(
+        choiceGroup,
+        getMenuEstimateChoiceSelection(choiceGroup),
+        units,
+        recipeByDishId,
+      );
+      const costPerGuest = calculateChoiceGroupMenuEstimateCostPerHead(choiceGroup);
+      const commercialStatus = !readiness.canAdd
+        ? { label: readiness.label, className: 'border-red-200 bg-red-50 text-red-700' }
+        : unitCost <= 0
+          ? { label: 'Missing Cost', className: 'border-amber-200 bg-amber-50 text-amber-700' }
+          : { label: 'Ready', className: 'border-green-200 bg-green-50 text-green-700' };
+      const categoryMeta = getSelectedMenuCategoryMeta(
+        `${choiceGroup.groupName} ${representativeDish?.dishName || ''} ${representativeDish?.preparationArea || ''}`,
+      );
+
+      return {
+        id: `group-${choiceGroup.id}`,
+        rowType: 'choice-group' as const,
+        categoryId: categoryMeta.id as SelectedMenuCategoryId,
+        categoryLabel: categoryMeta.label,
+        itemName: choiceGroup.groupName || 'Unnamed Choice Group',
+        itemType: 'Choice Group',
+        quantityPerGuest: getMenuEstimateChoiceQuantity(choiceGroup) / baselineGuestDivisor,
+        unit: getMenuEstimateChoiceUnit(choiceGroup),
+        costPerGuest,
+        readiness,
+        statusLabel: commercialStatus.label,
+        statusClassName: commercialStatus.className,
+        onEdit: () => openChoiceGroupEditor(choiceGroup.id),
+        onRemove: () => handleRemoveChoiceGroup(choiceGroup.id),
+      };
+    }),
+  ];
+  const selectedMenuSections = SELECTED_MENU_CATEGORY_META.map((category) => ({
+    ...category,
+    rows: selectedMenuRows.filter((row) => row.categoryId === category.id),
+  })).filter((category) => category.rows.length > 0);
+  const validationSummaryItems = [
+    ...validationErrors.map((issue) => ({ id: `error-${issue}`, label: issue, tone: 'blocked' as const })),
+    ...suggestedCategoryGaps.map((gap) => ({
+      id: `gap-${gap.requirement.id}`,
+      label: `Missing required category: ${gap.requirement.label}.`,
+      tone: 'warning' as const,
+    })),
+    ...validationWarnings.map((issue) => ({ id: `warning-${issue}`, label: issue, tone: 'warning' as const })),
+  ];
+  const summaryMetricItems = [
+    { label: 'Total Items', value: totalSelectedLines.toString() },
+    { label: 'Baseline Guests', value: formBaselineGuests.toString() },
+    { label: 'Cost/Guest', value: `Rs. ${menuEstimateCostPerHead.toFixed(2)}` },
+    { label: 'Selling/Guest', value: packageSellingPerHead > 0 ? `Rs. ${packageSellingPerHead.toFixed(2)}` : 'Pending' },
+    {
+      label: 'Food Cost %',
+      value: packageSellingPerHead > 0 ? `${packageFoodCostPercent.toFixed(1)}%` : 'Pending',
+      valueClassName: packageSellingPerHead > 0 && packageFoodCostPercent > TARGET_FOOD_COST_PERCENT ? 'text-amber-700' : '',
+    },
+    {
+      label: 'Margin/Guest',
+      value: packageSellingPerHead > 0 ? `Rs. ${packageMarginPerHead.toFixed(2)}` : 'Pending',
+      valueClassName: packageSellingPerHead > 0 && packageMarginPerHead < 0 ? 'text-red-700' : '',
+    },
+    {
+      label: 'Package Profit',
+      value: packageSellingTotal > 0 ? `Rs. ${packageProfit.toFixed(2)}` : 'Pending',
+      valueClassName: packageSellingTotal > 0 && packageProfit < 0 ? 'text-red-700' : '',
+    },
+  ];
 
   return (
     <div className="h-full flex flex-col bg-white">
@@ -2910,19 +3236,19 @@ export function MenuPackageBuilder({
 
       <div className="flex-1 overflow-auto p-2">
         <div className="overflow-auto rounded border border-gray-200">
-          <table className="w-full min-w-[1060px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead className="sticky top-0 bg-gray-50">
               <tr>
-                <th className={compactTableHeadClass}>Package</th>
+                <th className={compactTableHeadClass}>Package Name</th>
                 <th className={compactTableHeadClass}>Type</th>
                 <th className={compactTableHeadClass}>Status</th>
-                <th className={`${compactTableHeadClass} text-right`}>Baseline</th>
-                <th className={`${compactTableHeadClass} text-right`}>Lines</th>
+                <th className={`${compactTableHeadClass} text-right`}>Baseline Guests</th>
                 <th className={`${compactTableHeadClass} text-right`}>Cost/Guest</th>
-                <th className={`${compactTableHeadClass} text-right`}>Price/Guest</th>
-                <th className={`${compactTableHeadClass} text-right`}>Margin</th>
-                <th className={compactTableHeadClass}>Owner</th>
-                <th className={`${compactTableHeadClass} text-right`}>Action</th>
+                <th className={`${compactTableHeadClass} text-right`}>Selling/Guest</th>
+                <th className={`${compactTableHeadClass} text-right`}>Food Cost %</th>
+                <th className={`${compactTableHeadClass} text-right`}>Margin/Guest</th>
+                <th className={compactTableHeadClass}>Commercial Status</th>
+                <th className={`${compactTableHeadClass} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2936,10 +3262,9 @@ export function MenuPackageBuilder({
                 </tr>
               ) : (
                 filteredPackages.map((pkg) => {
-                  const packageMargin =
-                    pkg.sellingPricePerHead > 0
-                      ? ((pkg.sellingPricePerHead - pkg.totalCostPerHead) / pkg.sellingPricePerHead) * 100
-                      : 0;
+                  const packageFoodCost = pkg.sellingPricePerHead > 0 ? (pkg.totalCostPerHead / pkg.sellingPricePerHead) * 100 : null;
+                  const packageProfitPerGuest = pkg.sellingPricePerHead - pkg.totalCostPerHead;
+                  const commercialStatus = getPackageCommercialStatus(pkg.totalCostPerHead, pkg.sellingPricePerHead);
 
                   return (
                     <tr key={pkg.id} className="border-t border-gray-200 hover:bg-orange-50/40">
@@ -2952,21 +3277,15 @@ export function MenuPackageBuilder({
                           {pkg.packageName}
                         </button>
                         {pkg.description ? (
-                          <div className="mt-0.5 max-w-lg truncate text-[11px] text-slate-500">{pkg.description}</div>
+                          <div className="mt-0.5 max-w-xl whitespace-normal break-words text-[11px] text-slate-500">{pkg.description}</div>
                         ) : null}
                       </td>
                       <td className={compactTableCellClass}>
                         {packageTypeNameMap.get(pkg.packageType) || pkg.packageType.replace(/-/g, ' ')}
                       </td>
                       <td className={compactTableCellClass}>{getStatusBadge(pkg.status)}</td>
-                      <td className={`${compactTableCellClass} text-right text-slate-900`}>
+                      <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
                         {pkg.minimumGuests || 0}
-                      </td>
-                      <td className={`${compactTableCellClass} text-right text-slate-900`}>
-                        {pkg.dishes.length + (pkg.choiceGroups || []).reduce((sum, group) => sum + group.dishes.length, 0)}
-                        <span className="ml-1 text-[11px] text-slate-500">
-                          ({pkg.dishes.length}F/{pkg.choiceGroups?.length || 0}G)
-                        </span>
                       </td>
                       <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
                         Rs. {pkg.totalCostPerHead.toFixed(2)}
@@ -2974,18 +3293,17 @@ export function MenuPackageBuilder({
                       <td className={`${compactTableCellClass} text-right font-medium text-orange-700`}>
                         Rs. {pkg.sellingPricePerHead.toFixed(2)}
                       </td>
-                      <td
-                        className={`${compactTableCellClass} text-right font-semibold ${
-                          pkg.sellingPricePerHead <= 0
-                            ? 'text-amber-700'
-                            : packageMargin >= TARGET_MARGIN_PERCENT
-                              ? 'text-green-700'
-                              : 'text-red-700'
-                        }`}
-                      >
-                        {pkg.sellingPricePerHead > 0 ? `${packageMargin.toFixed(1)}%` : 'Pending'}
+                      <td className={`${compactTableCellClass} text-right font-medium ${packageFoodCost !== null && packageFoodCost > TARGET_FOOD_COST_PERCENT ? 'text-amber-700' : 'text-slate-900'}`}>
+                        {packageFoodCost !== null ? `${packageFoodCost.toFixed(1)}%` : 'Pending'}
                       </td>
-                      <td className={compactTableCellClass}>{pkg.createdBy}</td>
+                      <td className={`${compactTableCellClass} text-right font-medium ${packageProfitPerGuest < 0 ? 'text-red-700' : 'text-slate-900'}`}>
+                        Rs. {packageProfitPerGuest.toFixed(2)}
+                      </td>
+                      <td className={compactTableCellClass}>
+                        <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${commercialStatus.className}`}>
+                          {commercialStatus.label}
+                        </span>
+                      </td>
                       <td className={`${compactTableCellClass} text-right`}>
                         <div className="flex justify-end gap-1">
                           <button
@@ -3030,36 +3348,8 @@ export function MenuPackageBuilder({
               </button>
             </div>
 
-            <div className="grid gap-px border-b border-slate-200 bg-slate-200 text-xs md:grid-cols-5">
-              {(activeBuilderTab === 'menu-items'
-                ? [
-                    { label: 'Fixed Items', value: packageDishes.length.toString() },
-                    { label: 'Choice Groups', value: choiceGroups.length.toString() },
-                    { label: 'Menu Lines', value: totalSelectedLines.toString() },
-                    { label: 'Ready Dishes', value: readyDishCount.toString(), valueClassName: 'text-green-700' },
-                    { label: 'Blocked Dishes', value: blockedDishCount.toString(), valueClassName: blockedDishCount > 0 ? 'text-amber-700' : 'text-slate-900' },
-                  ]
-                : [
-                    { label: 'Package Cost/Guest', value: `Rs. ${menuEstimateCostPerHead.toFixed(2)}` },
-                    { label: 'Selling Price/Guest', value: formSellingPricePerHead > 0 ? `Rs. ${formSellingPricePerHead.toFixed(2)}` : 'Pending price' },
-                    { label: 'Food Cost %', value: formSellingPricePerHead > 0 ? `${calculateFoodCostPercent().toFixed(1)}%` : 'Pending price', valueClassName: formSellingPricePerHead <= 0 ? 'text-amber-600' : calculateFoodCostPercent() <= TARGET_FOOD_COST_PERCENT ? 'text-green-600' : 'text-red-600' },
-                    { label: 'Margin %', value: formSellingPricePerHead > 0 ? `${calculateMargin().toFixed(1)}%` : 'Pending price', valueClassName: formSellingPricePerHead <= 0 ? 'text-amber-600' : calculateMargin() >= TARGET_MARGIN_PERCENT ? 'text-green-600' : 'text-red-600' },
-                    {
-                      label: 'Validation Status',
-                      value: validationStatusLabel,
-                      valueClassName: validationStatusClass,
-                    },
-                  ]
-              ).map((item) => (
-                <div key={item.label} className="bg-slate-50 px-2 py-1">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</div>
-                  <div className={`font-semibold text-slate-900 ${item.valueClassName || ''}`}>{item.value}</div>
-                </div>
-              ))}
-            </div>
-
             <div className="border-b border-slate-200 bg-white px-3 py-2">
-              <div className={`grid gap-2 ${activeBuilderTab === 'menu-items' ? 'xl:grid-cols-[minmax(0,2fr)_220px_160px]' : 'xl:grid-cols-[minmax(0,2fr)_180px_170px_160px_140px]'}`}>
+              <div className="grid gap-2 xl:grid-cols-[minmax(0,2fr)_180px_150px_170px_150px]">
                 <div>
                   <label className={compactLabelClass}>Package Name *</label>
                   <input
@@ -3087,32 +3377,28 @@ export function MenuPackageBuilder({
                     ))}
                   </select>
                 </div>
-                {activeBuilderTab !== 'menu-items' ? (
-                  <>
-                    <div>
-                      <label className={compactLabelClass}>Baseline Guest Count *</label>
-                      <input
-                        type="number"
-                        value={formBaselineGuests}
-                        onChange={(event) => setFormBaselineGuests(Number(event.target.value))}
-                        disabled={viewMode}
-                        placeholder="100"
-                        className={compactInputClass}
-                      />
-                    </div>
-                    <div>
-                      <label className={compactLabelClass}>Selling Price/Guest *</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={formSellingPricePerHead}
-                        onChange={(event) => setFormSellingPricePerHead(Number(event.target.value))}
-                        disabled={viewMode}
-                        className={compactInputClass}
-                      />
-                    </div>
-                  </>
-                ) : null}
+                <div>
+                  <label className={compactLabelClass}>Baseline Guests *</label>
+                  <input
+                    type="number"
+                    value={formBaselineGuests}
+                    onChange={(event) => setFormBaselineGuests(Number(event.target.value))}
+                    disabled={viewMode}
+                    placeholder="100"
+                    className={compactInputClass}
+                  />
+                </div>
+                <div>
+                  <label className={compactLabelClass}>Selling Price / Guest</label>
+                  <input
+                    type="number"
+                    value={formSellingPricePerGuest}
+                    onChange={(event) => setFormSellingPricePerGuest(Math.max(Number(event.target.value) || 0, 0))}
+                    disabled={viewMode}
+                    placeholder="1950"
+                    className={compactInputClass}
+                  />
+                </div>
                 <div>
                   <label className={compactLabelClass}>Status *</label>
                   <select
@@ -3122,51 +3408,62 @@ export function MenuPackageBuilder({
                     className={compactInputClass}
                   >
                     <option value="draft">Draft</option>
-                    <option value="approved">Approved</option>
+                    <option value="approved" disabled={!canApprovePackage}>
+                      Approved
+                    </option>
                     <option value="inactive">Inactive</option>
                   </select>
                 </div>
               </div>
-            </div>
-
-            <div className="flex items-end justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 pt-1.5">
-              <div className="flex gap-1 overflow-x-auto">
-                {BUILDER_TABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setActiveBuilderTab(tab.id)}
-                    className={`h-7 rounded-t border border-b-0 px-3 text-xs font-semibold uppercase tracking-wide transition-colors ${
-                      activeBuilderTab === tab.id
-                        ? 'border-slate-200 bg-white text-slate-900'
-                        : 'border-transparent text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-              <div className="pb-2 text-[11px] text-slate-500">
-                {filteredAvailableDishes.length} filtered | {selectedAvailableDishIds.length} selected
-              </div>
-            </div>
-
-            <div className="border-b border-slate-200 bg-white px-3 py-1.5">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <div className={`flex min-w-[260px] flex-1 items-center gap-2 rounded border px-2 py-1 ${assistantToneClass[primaryAssistantIssue.severity]}`}>
-                  <span className="font-semibold">{primaryAssistantIssue.title}</span>
-                  <span className="truncate">{primaryAssistantIssue.detail}</span>
+              <div className="mt-2 grid gap-2 xl:grid-cols-[minmax(0,1fr)_260px]">
+                <div>
+                  <label className={compactLabelClass}>Description</label>
+                  <input
+                    type="text"
+                    value={formDescription}
+                    onChange={(event) => setFormDescription(event.target.value)}
+                    disabled={viewMode}
+                    placeholder="Optional service or commercial note"
+                    className={compactInputClass}
+                  />
                 </div>
-                {categoryCoverageItems.slice(0, 5).map(([category, count]) => (
-                  <span key={category} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">
-                    {category}: <span className="font-semibold text-slate-900">{count}</span>
-                  </span>
-                ))}
-                {suggestedCategoryGaps.length > 0 && !viewMode ? (
-                  <button type="button" onClick={handleApplyAssistantPlan} className={compactPrimaryButtonClass}>
-                    Apply Suggestions
-                  </button>
-                ) : null}
+                <div className={`flex items-center justify-between rounded border px-2.5 py-1.5 text-xs ${assistantToneClass[primaryAssistantIssue.severity]}`}>
+                  <div className="min-w-0">
+                    <div className="font-semibold">{primaryAssistantIssue.title}</div>
+                    <div className="truncate">{primaryAssistantIssue.detail}</div>
+                  </div>
+                  <div className="pl-3 text-right font-semibold">
+                    {validationStatusLabel}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {BUILDER_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setActiveBuilderTab(tab.id)}
+                      className={`rounded border px-3 py-2 text-left ${
+                        activeBuilderTab === tab.id
+                          ? 'border-orange-300 bg-white text-slate-900 shadow-sm'
+                          : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-white'
+                      }`}
+                    >
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{tab.step}</div>
+                      <div className="text-sm font-semibold">{tab.label}</div>
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-600">
+                  <span>Available: <span className="font-semibold text-slate-900">{filteredAvailableDishes.length}</span></span>
+                  <span>Selected: <span className="font-semibold text-slate-900">{totalSelectedLines}</span></span>
+                  <span>Ready: <span className="font-semibold text-green-700">{readyDishCount}</span></span>
+                  <span>Blocked: <span className={`font-semibold ${blockedDishCount > 0 ? 'text-amber-700' : 'text-slate-900'}`}>{blockedDishCount}</span></span>
+                </div>
               </div>
             </div>
 
@@ -3247,190 +3544,265 @@ export function MenuPackageBuilder({
               )}
 
               {activeBuilderTab === 'menu-items' && (
-                <div className="space-y-3">
-                  <div className="rounded border border-slate-200 bg-white p-2.5">
-                    <div className="grid gap-2 lg:grid-cols-[minmax(0,1.6fr)_180px_180px_180px_auto]">
-                      <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
-                        <input
-                          type="text"
-                          value={itemSearchTerm}
-                          onChange={(event) => setItemSearchTerm(event.target.value)}
-                          disabled={viewMode}
-                          placeholder="Search dish, category, cuisine, or area"
-                          className={`${compactInputClass} pl-9`}
-                        />
-                      </div>
-                      <select
-                        value={categoryFilter}
-                        onChange={(event) => setCategoryFilter(event.target.value)}
-                        disabled={viewMode}
-                        className={compactInputClass}
-                      >
-                        <option value="all">All Categories</option>
-                        {categoryOptions.map((category) => (
-                          <option key={category} value={category}>
-                            {category}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={cuisineFilter}
-                        onChange={(event) => setCuisineFilter(event.target.value)}
-                        disabled={viewMode}
-                        className={compactInputClass}
-                      >
-                        <option value="all">All Cuisines</option>
-                        {cuisineOptions.map((cuisine) => (
-                          <option key={cuisine} value={cuisine}>
-                            {cuisine}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={preparationAreaFilter}
-                        onChange={(event) => setPreparationAreaFilter(event.target.value)}
-                        disabled={viewMode}
-                        className={compactInputClass}
-                      >
-                        <option value="all">All Preparation Areas</option>
-                        {preparationAreaOptions.map((preparationArea) => (
-                          <option key={preparationArea} value={preparationArea}>
-                            {preparationArea.replace(/-/g, ' ')}
-                          </option>
-                        ))}
-                      </select>
-                      <button type="button" onClick={resetMenuItemFilters} disabled={viewMode} className={compactSecondaryButtonClass}>
-                        Clear
-                      </button>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                        <span>{filteredAvailableDishes.length} dishes</span>
-                        <span>{selectedAvailableDishIds.length} selected</span>
-                        <span>
-                          Active group:{' '}
-                          <span className="font-medium text-slate-900">{activeChoiceGroup?.groupName || 'None selected'}</span>
-                        </span>
-                      </div>
-                      {!viewMode && (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button type="button" onClick={handleSelectVisibleDishes} className={compactSecondaryButtonClass}>
-                            Select Visible
-                          </button>
-                          <button type="button" onClick={handleClearDishSelection} className={compactSecondaryButtonClass}>
-                            Clear Selection
-                          </button>
-                          <button type="button" onClick={handleAddSelectedToFixedItems} className={compactPrimaryButtonClass}>
-                            Add to Fixed
-                          </button>
-                          <button type="button" onClick={handleAddSelectedToChoiceGroup} className={compactOutlineAccentButtonClass}>
-                            Add to Active Group
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.92fr)]">
-                    <section className="rounded border border-slate-200 bg-white">
-                      <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
+                <div className="grid gap-2 xl:grid-cols-[minmax(280px,0.95fr)_minmax(420px,1.2fr)_320px]">
+                  <section className="rounded border border-slate-200 bg-white">
+                    <div className="border-b border-slate-200 px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
                         <h3 className="text-sm font-semibold text-slate-900">Available Dishes</h3>
                         <span className="text-[11px] text-slate-500">{filteredAvailableDishes.length} rows</span>
                       </div>
-                      <div className="max-h-[520px] min-h-[240px] overflow-auto divide-y divide-slate-100">
-                        {filteredAvailableDishes.length === 0 ? (
-                          <div className="px-4 py-6 text-center text-sm text-slate-500">No dishes match the current filters.</div>
-                        ) : (
-                          filteredAvailableDishes.map((dish) => {
-                            const assignmentLabel = getDishAssignmentLabel(dish.id);
-                            const isSelected = selectedAvailableDishIds.includes(dish.id);
-                            const readiness = getDishPackageReadiness(dish, recipeByDishId, purchaseItemsById);
+                      <div className="mt-2 grid gap-2 lg:grid-cols-2">
+                        <div className="relative lg:col-span-2">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+                          <input
+                            type="text"
+                            value={itemSearchTerm}
+                            onChange={(event) => setItemSearchTerm(event.target.value)}
+                            disabled={viewMode}
+                            placeholder="Search dish, category, cuisine, or area"
+                            className={`${compactInputClass} pl-9`}
+                          />
+                        </div>
+                        <select
+                          value={categoryFilter}
+                          onChange={(event) => setCategoryFilter(event.target.value)}
+                          disabled={viewMode}
+                          className={compactInputClass}
+                        >
+                          <option value="all">All Categories</option>
+                          {categoryOptions.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={cuisineFilter}
+                          onChange={(event) => setCuisineFilter(event.target.value)}
+                          disabled={viewMode}
+                          className={compactInputClass}
+                        >
+                          <option value="all">All Cuisines</option>
+                          {cuisineOptions.map((cuisine) => (
+                            <option key={cuisine} value={cuisine}>
+                              {cuisine}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={preparationAreaFilter}
+                          onChange={(event) => setPreparationAreaFilter(event.target.value)}
+                          disabled={viewMode}
+                          className={compactInputClass}
+                        >
+                          <option value="all">All Preparation Areas</option>
+                          {preparationAreaOptions.map((preparationArea) => (
+                            <option key={preparationArea} value={preparationArea}>
+                              {preparationArea.replace(/-/g, ' ')}
+                            </option>
+                          ))}
+                        </select>
+                        <button type="button" onClick={resetMenuItemFilters} disabled={viewMode} className={compactSecondaryButtonClass}>
+                          Clear
+                        </button>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                          <span>{selectedAvailableDishIds.length} selected</span>
+                          <span>
+                            Active group: <span className="font-semibold text-slate-900">{activeChoiceGroup?.groupName || 'None selected'}</span>
+                          </span>
+                        </div>
+                        {!viewMode ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button type="button" onClick={handleSelectVisibleDishes} className={compactSecondaryButtonClass}>
+                              Select Visible
+                            </button>
+                            <button type="button" onClick={handleClearDishSelection} className={compactSecondaryButtonClass}>
+                              Clear Selection
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openAddDishDialog(selectedAvailableDishIds)}
+                              disabled={selectedAvailableDishIds.length === 0}
+                              className={compactPrimaryButtonClass}
+                            >
+                              Add Selected
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="max-h-[620px] min-h-[260px] overflow-auto divide-y divide-slate-100">
+                      {filteredAvailableDishes.length === 0 ? (
+                        <div className="px-4 py-6 text-center text-sm text-slate-500">No dishes match the current filters.</div>
+                      ) : (
+                        filteredAvailableDishes.map((dish) => {
+                          const assignmentLabel = getDishAssignmentLabel(dish.id);
+                          const isSelected = selectedAvailableDishIds.includes(dish.id);
+                          const readiness = getDishPackageReadiness(dish, recipeByDishId, purchaseItemsById);
+                          const defaultVariant = getDefaultPackageVariant(dish, units, recipeByDishId, purchaseItemsById);
 
-                            return (
-                              <div
-                                key={dish.id}
-                                className={`grid grid-cols-[24px_minmax(0,1fr)_132px_104px] items-center gap-2 px-2 py-1.5 text-sm ${
-                                  isSelected ? 'bg-orange-50' : assignmentLabel ? 'bg-slate-50' : 'bg-white'
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => toggleAvailableDishSelection(dish.id)}
-                                  disabled={viewMode || Boolean(assignmentLabel) || !readiness.canAdd}
-                                  title={readiness.canAdd ? undefined : readiness.reason}
-                                  className="size-4"
-                                />
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium text-slate-900">{dish.dishName}</div>
-                                  <div className="truncate text-[11px] text-slate-500">
-                                    {dish.category} | {dish.cuisineName} | {dish.preparationArea.replace(/-/g, ' ')}
-                                  </div>
-                                </div>
-                                <div className="flex justify-end">
-                                  <span
-                                    className={`inline-flex max-w-[128px] truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
-                                    title={readiness.reason}
-                                  >
-                                    {readiness.label}
-                                  </span>
-                                </div>
-                                <div className="flex justify-end gap-1">
-                                  {assignmentLabel ? (
-                                    <span className="inline-flex max-w-[96px] truncate rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
-                                      {assignmentLabel}
-                                    </span>
-                                  ) : viewMode ? (
-                                    <span className="text-[11px] text-slate-400">Open</span>
-                                  ) : (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleQuickAddToFixedItems(dish.id)}
-                                        disabled={!readiness.canAdd}
-                                        title={readiness.canAdd ? 'Add as fixed item' : readiness.reason}
-                                        className="inline-flex h-7 items-center rounded border border-slate-300 px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400"
-                                      >
-                                        Fixed
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleQuickAddToChoiceGroup(dish.id)}
-                                        disabled={!activeChoiceGroupId || !readiness.canAdd}
-                                        title={readiness.canAdd ? 'Add to active choice group' : readiness.reason}
-                                        className="inline-flex h-7 items-center rounded border border-orange-300 px-2 text-[11px] font-medium text-orange-700 hover:bg-orange-50 disabled:bg-slate-100 disabled:text-slate-400"
-                                      >
-                                        Group
-                                      </button>
-                                    </>
-                                  )}
+                          return (
+                            <div
+                              key={dish.id}
+                              className={`grid grid-cols-[22px_minmax(0,1fr)_70px_124px_72px] items-center gap-2 px-2 py-1.5 text-sm ${
+                                isSelected ? 'bg-orange-50' : assignmentLabel ? 'bg-slate-50' : 'bg-white'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleAvailableDishSelection(dish.id)}
+                                disabled={viewMode || Boolean(assignmentLabel) || !readiness.canAdd}
+                                title={readiness.canAdd ? undefined : readiness.reason}
+                                className="size-4"
+                              />
+                              <div className="min-w-0">
+                                <div className="whitespace-normal break-words font-medium text-slate-900">{dish.dishName}</div>
+                                <div className="text-[11px] text-slate-500">
+                                  {dish.category} | {dish.preparationArea.replace(/-/g, ' ')}
                                 </div>
                               </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    </section>
+                              <div className="truncate text-[11px] text-slate-600">
+                                {defaultVariant?.salesUnit || dish.unit || 'pcs'}
+                              </div>
+                              <div className="flex justify-end">
+                                <span
+                                  className={`inline-flex max-w-[120px] truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
+                                  title={readiness.reason}
+                                >
+                                  {readiness.label}
+                                </span>
+                              </div>
+                              <div className="flex justify-end">
+                                {assignmentLabel ? (
+                                  <span className="inline-flex max-w-[72px] truncate rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
+                                    {assignmentLabel}
+                                  </span>
+                                ) : viewMode ? (
+                                  <span className="text-[11px] text-slate-400">Open</span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => openAddDishDialog([dish.id])}
+                                    disabled={!readiness.canAdd}
+                                    title={readiness.canAdd ? 'Choose where to add this dish' : readiness.reason}
+                                    className={compactPrimaryButtonClass}
+                                  >
+                                    Add
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
 
-                    <div className="space-y-2">
-                      <section className="rounded border border-slate-200 bg-white">
+                  <section className="rounded border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">Selected Menu Package</h3>
+                        <div className="text-[11px] text-slate-500">
+                          Grouped by service category with cost-only visibility.
+                        </div>
+                      </div>
+                      {!viewMode ? (
+                        <div className="flex items-center gap-1">
+                          {suggestedCategoryGaps.length > 0 ? (
+                            <button type="button" onClick={handleApplyAssistantPlan} className={compactOutlineAccentButtonClass}>
+                              Apply Suggestions
+                            </button>
+                          ) : null}
+                          <button type="button" onClick={handleAddChoiceGroup} className={compactPrimaryButtonClass}>
+                            <Plus className="h-4 w-4" />
+                            Group
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="max-h-[360px] overflow-auto">
+                      {selectedMenuSections.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-sm text-slate-500">Add dishes to start building the package.</div>
+                      ) : (
+                        selectedMenuSections.map((section) => (
+                          <div key={section.id} className="border-b border-slate-100 last:border-b-0">
+                            <div className="bg-slate-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                              {section.label}
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              {section.rows.map((row) => (
+                                <div
+                                  key={row.id}
+                                  className="grid grid-cols-[minmax(0,1.5fr)_92px_92px_96px_122px_78px] items-center gap-2 px-2 py-1.5 text-sm"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="whitespace-normal break-words font-medium text-slate-900">{row.itemName}</div>
+                                    <div className="text-[11px] text-slate-500">{row.itemType}</div>
+                                  </div>
+                                  <div className="text-right text-slate-900">
+                                    {row.quantityPerGuest.toFixed(2)}
+                                    <div className="text-[11px] text-slate-500">{row.unit || 'pcs'}</div>
+                                  </div>
+                                  <div className="text-right font-medium text-slate-900">Rs. {row.costPerGuest.toFixed(2)}</div>
+                                  <div className="text-right text-slate-900">
+                                    {menuEstimateCostPerHead > 0
+                                      ? `${((row.costPerGuest / menuEstimateCostPerHead) * 100).toFixed(1)}%`
+                                      : '0.0%'}
+                                  </div>
+                                  <div className="flex justify-end">
+                                    <span className={`inline-flex max-w-[120px] truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${row.statusClassName}`}>
+                                      {row.statusLabel}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-end gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={row.onEdit}
+                                      className="inline-flex h-7 items-center rounded border border-slate-300 px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                                    >
+                                      Edit
+                                    </button>
+                                    {!viewMode ? (
+                                      <button
+                                        type="button"
+                                        onClick={row.onRemove}
+                                        className="inline-flex size-7 items-center justify-center rounded text-red-600 hover:bg-red-50"
+                                        title="Remove row"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-200">
+                      <section className="border-b border-slate-200">
                         <button
                           type="button"
                           onClick={() => setFixedItemsOpen((current) => !current)}
-                          className="flex w-full items-center justify-between gap-2 border-b border-slate-200 px-2.5 py-1.5 text-left"
+                          className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left"
                         >
                           <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                             {fixedItemsOpen ? <ChevronDown className="size-3.5 text-slate-500" /> : <ChevronRight className="size-3.5 text-slate-500" />}
-                            Fixed Items
+                            Fixed Item Controls
                           </span>
                           <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
-                            {packageDishes.length} lines
+                            {packageDishes.length} items
                           </span>
                         </button>
-                        <div className={fixedItemsOpen ? 'max-h-[245px] overflow-auto' : 'hidden'}>
+                        <div className={fixedItemsOpen ? 'max-h-[180px] overflow-auto border-t border-slate-100' : 'hidden'}>
                           {packageDishes.length === 0 ? (
-                            <div className="px-4 py-5 text-center text-sm text-slate-500">No fixed items selected.</div>
+                            <div className="px-4 py-4 text-center text-sm text-slate-500">No fixed items selected.</div>
                           ) : (
                             <div className="min-w-[620px] divide-y divide-slate-100">
                               {packageDishes.map((dish, index) => {
@@ -3438,7 +3810,7 @@ export function MenuPackageBuilder({
                                 return (
                                   <div
                                     key={`${dish.dishId}-${index}`}
-                                    className="grid grid-cols-[minmax(0,1fr)_150px_132px_28px] items-center gap-2 px-2 py-1.5 text-sm"
+                                    className="grid grid-cols-[minmax(0,1fr)_160px_88px_132px_28px] items-center gap-2 px-2 py-1.5 text-sm"
                                   >
                                     <div className="min-w-0">
                                       <div className="truncate font-medium text-slate-900">{dish.dishName}</div>
@@ -3459,6 +3831,14 @@ export function MenuPackageBuilder({
                                         </option>
                                       ))}
                                     </select>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={dish.quantityPerHead}
+                                      onChange={(event) => handleUpdateDish(index, 'quantityPerHead', Number(event.target.value))}
+                                      disabled={viewMode}
+                                      className={`${compactInputClass} text-right`}
+                                    />
                                     <span
                                       className={`inline-flex justify-center truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
                                       title={readiness.reason}
@@ -3484,17 +3864,17 @@ export function MenuPackageBuilder({
                         </div>
                       </section>
 
-                      <section className="rounded border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
+                      <section>
+                        <div className="flex items-center justify-between px-2.5 py-1.5">
                           <button
                             type="button"
                             onClick={() => setChoiceGroupsOpen((current) => !current)}
                             className="flex items-center gap-2 text-left text-sm font-semibold text-slate-900"
                           >
                             {choiceGroupsOpen ? <ChevronDown className="size-3.5 text-slate-500" /> : <ChevronRight className="size-3.5 text-slate-500" />}
-                            Choice Groups
+                            Choice Group Controls
                           </button>
-                          {!viewMode && (
+                          {!viewMode ? (
                             <div className="flex items-center gap-1">
                               {activeChoiceGroup ? (
                                 <button type="button" onClick={() => openChoiceGroupEditor(activeChoiceGroup.id)} className={compactOutlineAccentButtonClass}>
@@ -3506,34 +3886,30 @@ export function MenuPackageBuilder({
                                 Group
                               </button>
                             </div>
-                          )}
+                          ) : null}
                         </div>
-                        <div className={choiceGroupsOpen ? 'max-h-[280px] overflow-auto' : 'hidden'}>
+                        <div className={choiceGroupsOpen ? 'max-h-[220px] overflow-auto border-t border-slate-100' : 'hidden'}>
                           {choiceGroups.length === 0 ? (
-                            <div className="px-4 py-5 text-center text-sm text-slate-500">No choice groups.</div>
+                            <div className="px-4 py-4 text-center text-sm text-slate-500">No choice groups.</div>
                           ) : (
                             <div className="divide-y divide-slate-100">
                               {choiceGroups.map((choiceGroup) => (
                                 <div
                                   key={choiceGroup.id}
-                                  className={`grid grid-cols-[minmax(0,1fr)_70px_62px_76px_118px] items-center gap-2 px-2 py-1.5 text-sm ${
+                                  className={`grid grid-cols-[minmax(0,1fr)_72px_84px_122px] items-center gap-2 px-2 py-1.5 text-sm ${
                                     activeChoiceGroupId === choiceGroup.id ? 'bg-orange-50' : 'bg-white'
                                   }`}
                                 >
                                   <div className="min-w-0">
                                     <div className="truncate font-medium text-slate-900">{choiceGroup.groupName || 'Unnamed Group'}</div>
-                                    <div className="truncate text-[11px] text-slate-500">
-                                      Choose {choiceGroup.minSelect}/{choiceGroup.maxSelect}
-                                    </div>
                                     <div className="truncate text-[11px] text-slate-500" title={formatChoiceGroupDishSummary(choiceGroup, 12)}>
                                       {formatChoiceGroupDishSummary(choiceGroup)}
                                     </div>
                                   </div>
-                                  <div className="text-xs text-slate-600">{choiceGroup.required ? 'Req' : 'Opt'}</div>
+                                  <div className="text-xs text-slate-600">{choiceGroup.required ? 'Required' : 'Optional'}</div>
                                   <div className="text-xs text-slate-600">
                                     {choiceGroup.minSelect}/{choiceGroup.maxSelect}
                                   </div>
-                                  <div className="text-right text-xs font-semibold text-slate-900">{choiceGroup.dishes.length} dishes</div>
                                   <div className="flex justify-end gap-1">
                                     <button
                                       type="button"
@@ -3549,16 +3925,6 @@ export function MenuPackageBuilder({
                                     >
                                       Edit
                                     </button>
-                                    {!viewMode && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoveChoiceGroup(choiceGroup.id)}
-                                        className="inline-flex size-7 items-center justify-center rounded text-red-600 hover:bg-red-50"
-                                        title="Remove group"
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </button>
-                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -3567,40 +3933,68 @@ export function MenuPackageBuilder({
                         </div>
                       </section>
                     </div>
+                  </section>
+
+                  <div className="space-y-2 xl:sticky xl:top-0 xl:self-start">
+                    <section className="rounded border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 px-2.5 py-1.5">
+                        <h3 className="text-sm font-semibold text-slate-900">Package Summary</h3>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {summaryMetricItems.map((item) => (
+                          <div key={item.label} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-sm">
+                            <span className="text-slate-600">{item.label}</span>
+                            <span className={`font-semibold text-slate-900 ${item.valueClassName || ''}`}>{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="border-t border-slate-200 px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span className="text-slate-600">Commercial Status</span>
+                          <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${packageCommercialStatus.className}`}>
+                            {packageCommercialStatus.label}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2 text-sm">
+                          <span className="text-slate-600">Validation Status</span>
+                          <span className={`font-semibold ${validationStatusClass}`}>{validationStatusLabel}</span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 px-2.5 py-1.5">
+                        <h3 className="text-sm font-semibold text-slate-900">Validation</h3>
+                      </div>
+                      <div className="max-h-[300px] overflow-auto px-2.5 py-2">
+                        {validationSummaryItems.length === 0 ? (
+                          <div className="flex items-center gap-2 text-sm text-green-700">
+                            <CheckCircle2 className="size-4" />
+                            Ready for commercial review.
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {validationSummaryItems.slice(0, 10).map((item) => (
+                              <div key={item.id} className="flex items-start gap-2 text-sm">
+                                {item.tone === 'blocked' ? (
+                                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-600" />
+                                ) : (
+                                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                                )}
+                                <span className={item.tone === 'blocked' ? 'text-red-800' : 'text-amber-800'}>{item.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+
                   </div>
                 </div>
               )}
 
               {activeBuilderTab === 'menu-estimate' && (
-                <div className="space-y-2">
-                  <div className="grid gap-px overflow-hidden rounded border border-slate-200 bg-slate-200 text-xs md:grid-cols-5">
-                    {[
-                      { label: 'Baseline Guests', value: formBaselineGuests.toFixed(0) },
-                      { label: 'Total Menu Cost', value: `Rs. ${calculateTotalMenuCost().toFixed(2)}` },
-                      { label: 'Base Recipe Cost', value: `Rs. ${baseRecipeCostPerHead.toFixed(2)}/head` },
-                      {
-                        label: 'Estimate Variance',
-                        value: `Rs. ${menuEstimateVariance.toFixed(2)}/head`,
-                        valueClassName:
-                          menuEstimateVariance > 0
-                            ? 'text-red-700'
-                            : menuEstimateVariance < 0
-                              ? 'text-green-700'
-                              : 'text-slate-900',
-                      },
-                      {
-                        label: `Recommended @ ${TARGET_FOOD_COST_PERCENT}% FC`,
-                        value: recommendedSellingPricePerHead > 0 ? `Rs. ${recommendedSellingPricePerHead.toFixed(0)}` : 'Pending cost',
-                        valueClassName: sellingPriceGap > 0 ? 'text-orange-700' : 'text-green-700',
-                      },
-                    ].map((item) => (
-                      <div key={item.label} className="bg-white px-2.5 py-1.5">
-                        <div className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</div>
-                        <div className={`font-semibold text-slate-900 ${item.valueClassName || ''}`}>{item.value}</div>
-                      </div>
-                    ))}
-                  </div>
-
+                <div>
                   {costEngineeringLines.length === 0 ? (
                     <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
                       <h3 className="text-base font-semibold text-slate-900">Add menu items first</h3>
@@ -3609,33 +4003,30 @@ export function MenuPackageBuilder({
                       </p>
                     </div>
                   ) : (
-                    <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_360px]">
+                    <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_320px]">
                       <section className="rounded border border-slate-200 bg-white">
-                        <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2">
+                        <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
                           <div>
-                            <h3 className="text-sm font-semibold text-slate-900">Package Cost Engineering</h3>
-                            <p className="mt-0.5 text-[11px] text-slate-500">
-                              Edit estimated quantity and UOM. Per-guest quantities and costs recalculate automatically.
-                            </p>
+                            <h3 className="text-sm font-semibold text-slate-900">Package Costing</h3>
+                            <p className="mt-0.5 text-[11px] text-slate-500">Production cost only. Package selling is entered once at package level.</p>
                           </div>
                           <div className="text-right text-[11px] text-slate-600">
                             <div>Baseline: {formBaselineGuests} guests</div>
-                            <div>Food cost: {formSellingPricePerHead > 0 ? `${calculateFoodCostPercent().toFixed(1)}%` : 'Pending price'}</div>
+                            <div>Cost/guest: Rs. {menuEstimateCostPerHead.toFixed(2)}</div>
                           </div>
                         </div>
                         <div className="max-h-[560px] overflow-auto">
-                          <table className="w-full min-w-[1120px] text-sm">
+                          <table className="w-full min-w-[980px] text-sm">
                             <thead className="sticky top-0 bg-slate-50">
                               <tr>
-                                <th className={compactTableHeadClass}>Type</th>
                                 <th className={compactTableHeadClass}>Menu Item</th>
-                                <th className={compactTableHeadClass}>Recipe Status</th>
                                 <th className={`${compactTableHeadClass} text-right`}>Estimated Qty for Baseline Guests</th>
                                 <th className={compactTableHeadClass}>UOM</th>
-                                <th className={`${compactTableHeadClass} text-right`}>Qty Per Guest</th>
-                                <th className={`${compactTableHeadClass} text-right`}>Cost Per Guest</th>
+                                <th className={compactTableHeadClass}>Output Unit</th>
+                                <th className={`${compactTableHeadClass} text-right`}>Cost / Unit</th>
                                 <th className={`${compactTableHeadClass} text-right`}>Total Cost</th>
                                 <th className={`${compactTableHeadClass} text-right`}>Cost Impact %</th>
+                                <th className={compactTableHeadClass}>Status</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -3656,10 +4047,9 @@ export function MenuPackageBuilder({
                                           : 'bg-white'
                                     }`}
                                   >
-                                    <td className={compactTableCellClass}>{line.type}</td>
                                     <td className={compactTableCellClass}>
-                                      <div className="font-medium text-slate-900">{line.name}</div>
-                                      <div className="mt-0.5 text-[11px] text-slate-500">{line.detail}</div>
+                                      <div className="whitespace-normal break-words font-medium text-slate-900">{line.name}</div>
+                                      <div className="mt-0.5 text-[11px] text-slate-500">{line.itemTypeLabel} | {line.detail}</div>
                                       {choiceGroup ? (
                                         <div className="mt-1 grid gap-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                                           <select
@@ -3695,14 +4085,6 @@ export function MenuPackageBuilder({
                                           ) : null}
                                         </div>
                                       ) : null}
-                                    </td>
-                                    <td className={compactTableCellClass}>
-                                      <span
-                                        className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(line.readiness)}`}
-                                        title={line.readiness.reason}
-                                      >
-                                        {line.readiness.label}
-                                      </span>
                                     </td>
                                     <td className={`${compactTableCellClass} text-right`}>
                                       <input
@@ -3742,24 +4124,31 @@ export function MenuPackageBuilder({
                                       ) : null}
                                     </td>
                                     <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
-                                      {line.qtyPerGuestLabel}
+                                      {getUnitSymbol(line.rateUnit, units)}
                                     </td>
                                     <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
-                                      Rs. {line.costPerGuest.toFixed(2)}
+                                      Rs. {line.unitCost.toFixed(2)}
                                     </td>
                                     <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
                                       Rs. {line.totalCost.toFixed(2)}
                                     </td>
-                                    <td
-                                      className={`${compactTableCellClass} text-right font-semibold ${
-                                        line.impactPercent >= 50
-                                          ? 'text-red-700'
-                                          : line.impactPercent >= 20
-                                            ? 'text-amber-700'
-                                            : 'text-slate-900'
-                                      }`}
-                                    >
+                                    <td className={`${compactTableCellClass} text-right font-medium text-slate-900`}>
                                       {line.impactPercent.toFixed(1)}%
+                                    </td>
+                                    <td
+                                      className={`${compactTableCellClass}`}
+                                    >
+                                      <div className="flex flex-col items-start gap-1">
+                                        <span
+                                          className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${line.statusClassName}`}
+                                          title={line.readiness.reason}
+                                        >
+                                          {line.statusLabel}
+                                        </span>
+                                        <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(line.readiness)}`}>
+                                          {line.readiness.label}
+                                        </span>
+                                      </div>
                                     </td>
                                   </tr>
                                 );
@@ -3767,16 +4156,16 @@ export function MenuPackageBuilder({
                             </tbody>
                             <tfoot className="sticky bottom-0 bg-slate-100">
                               <tr className="border-t border-slate-300">
-                                <td colSpan={6} className="px-2.5 py-2 text-right text-sm font-semibold uppercase tracking-wide text-slate-700">
+                                <td colSpan={5} className="px-2.5 py-2 text-right text-sm font-semibold uppercase tracking-wide text-slate-700">
                                   Package Total
                                 </td>
                                 <td className="px-2.5 py-2 text-right text-sm font-semibold text-slate-900">
-                                  Rs. {menuEstimateCostPerHead.toFixed(2)}
+                                  Rs. {menuEstimateTotalCost.toFixed(2)}
                                 </td>
-                                <td className="px-2.5 py-2 text-right text-sm font-semibold text-slate-900">
-                                  Rs. {calculateTotalMenuCost().toFixed(2)}
+                                <td className="px-2.5 py-2 text-right text-sm font-semibold text-slate-900">100%</td>
+                                <td className="px-2.5 py-2 text-left text-sm font-semibold text-slate-900">
+                                  {packageCommercialStatus.label}
                                 </td>
-                                <td className="px-2.5 py-2 text-right text-sm font-semibold text-slate-900">100.0%</td>
                               </tr>
                             </tfoot>
                           </table>
@@ -3785,114 +4174,59 @@ export function MenuPackageBuilder({
 
                       <div className="space-y-2">
                         <section className="rounded border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            Pricing Recommendation
-                          </div>
+                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">Package KPIs</div>
                           <div className="space-y-1.5 px-3 py-2 text-sm">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-slate-600">Current Food Cost</span>
-                              <span className={`font-semibold ${calculateFoodCostPercent() > TARGET_FOOD_COST_PERCENT ? 'text-red-700' : 'text-green-700'}`}>
-                                {formSellingPricePerHead > 0 ? `${calculateFoodCostPercent().toFixed(1)}%` : 'Pending price'}
+                              <span className="text-slate-600">Baseline Guests</span>
+                              <span className="font-semibold text-slate-900">{formBaselineGuests}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600">Total Package Cost</span>
+                              <span className="font-semibold text-slate-900">Rs. {menuEstimateTotalCost.toFixed(2)}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600">Cost / Guest</span>
+                              <span className="font-semibold text-slate-900">Rs. {menuEstimateCostPerHead.toFixed(2)}</span>
+                            </div>
+                            <div>
+                              <label className={compactLabelClass}>Selling Price / Guest</label>
+                              <input
+                                type="number"
+                                value={formSellingPricePerGuest}
+                                onChange={(event) => setFormSellingPricePerGuest(Math.max(Number(event.target.value) || 0, 0))}
+                                disabled={viewMode}
+                                className={compactInputClass}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600">Margin / Guest</span>
+                              <span className="font-semibold text-slate-900">
+                                {packageSellingPerHead > 0 ? `Rs. ${packageMarginPerHead.toFixed(2)}` : 'Pending'}
                               </span>
                             </div>
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-slate-600">Target Food Cost</span>
-                              <span className="font-semibold text-slate-900">{TARGET_FOOD_COST_PERCENT}%</span>
-                            </div>
-                            <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
-                              <span className="font-medium text-slate-900">Recommended Selling Price</span>
-                              <span className="font-semibold text-orange-700">
-                                {recommendedSellingPricePerHead > 0 ? `Rs. ${recommendedSellingPricePerHead.toFixed(0)}` : 'Pending cost'}
+                              <span className="text-slate-600">Food Cost %</span>
+                              <span className={`font-semibold ${packageSellingPerHead > 0 && packageFoodCostPercent > TARGET_FOOD_COST_PERCENT ? 'text-amber-700' : 'text-slate-900'}`}>
+                                {packageSellingPerHead > 0 ? `${packageFoodCostPercent.toFixed(1)}%` : 'Pending'}
                               </span>
                             </div>
-                            {sellingPriceGap > 0 ? (
-                              <div className="text-[11px] text-amber-700">
-                                Increase price by Rs. {sellingPriceGap.toFixed(0)}/head to meet target.
-                              </div>
-                            ) : null}
-                          </div>
-                        </section>
-
-                        {quantitySuggestions.length > 0 ? (
-                          <section className="rounded border border-slate-200 bg-white">
-                            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                              Similar Package Quantity Suggestions
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-slate-600">Package Profit</span>
+                              <span className={`font-semibold ${packageProfit < 0 ? 'text-red-700' : 'text-green-700'}`}>
+                                {packageSellingTotal > 0 ? `Rs. ${packageProfit.toFixed(2)}` : 'Pending price'}
+                              </span>
                             </div>
-                            <div className="divide-y divide-slate-100">
-                              {quantitySuggestions.map((suggestion) => (
-                                <div key={suggestion.id} className="grid grid-cols-[minmax(0,1fr)_64px] items-center gap-2 px-3 py-1.5 text-sm">
-                                  <div className="min-w-0">
-                                    <div className="truncate font-medium text-slate-900">{suggestion.name}</div>
-                                    <div className="text-[11px] text-slate-500">
-                                      Avg {suggestion.averageQty.toFixed(2)} from {suggestion.sampleCount} package{suggestion.sampleCount === 1 ? '' : 's'}
-                                    </div>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    disabled={viewMode}
-                                    onClick={() =>
-                                      suggestion.type === 'Fixed'
-                                        ? handleMenuEstimateFixedQuantityChange(suggestion.sourceId, suggestion.averageQty)
-                                        : handleMenuEstimateChoiceQuantityChange(suggestion.sourceId, suggestion.averageQty)
-                                    }
-                                    className="inline-flex h-7 items-center justify-center rounded border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:bg-slate-100"
-                                  >
-                                    Use
-                                  </button>
-                                </div>
-                              ))}
+                            <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
+                              <span className="font-medium text-slate-900">Commercial Status</span>
+                              <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${packageCommercialStatus.className}`}>
+                                {packageCommercialStatus.label}
+                              </span>
                             </div>
-                          </section>
-                        ) : null}
-
-                        <section className="rounded border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            Top Cost Drivers
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {topCostDrivers.length === 0 ? (
-                              <div className="px-3 py-3 text-sm text-slate-500">No cost drivers yet.</div>
-                            ) : (
-                              topCostDrivers.map((line) => (
-                                <div key={line.id} className="grid grid-cols-[minmax(0,1fr)_56px] items-center gap-2 px-3 py-1.5 text-sm">
-                                  <div className="min-w-0">
-                                    <div className="truncate font-medium text-slate-900">{line.name}</div>
-                                    <div className="mt-1 h-1.5 overflow-hidden rounded bg-slate-100">
-                                      <div className="h-full bg-orange-500" style={{ width: `${Math.min(line.impactPercent, 100)}%` }} />
-                                    </div>
-                                  </div>
-                                  <div className="text-right font-semibold text-slate-900">{line.impactPercent.toFixed(0)}%</div>
-                                </div>
-                              ))
-                            )}
                           </div>
                         </section>
 
                         <section className="rounded border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            Package Health
-                          </div>
-                          <div className="divide-y divide-slate-100">
-                            {packageHealthItems.map((item) => (
-                              <div key={item.label} className="flex items-start gap-2 px-3 py-1.5 text-sm">
-                                {item.passed ? (
-                                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-green-600" />
-                                ) : (
-                                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                                )}
-                                <div className="min-w-0">
-                                  <div className="font-medium text-slate-900">{item.label}</div>
-                                  <div className="truncate text-[11px] text-slate-500">{item.detail}</div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </section>
-
-                        <section className="rounded border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            Cost Warnings
-                          </div>
+                          <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">Warnings</div>
                           <div className="max-h-40 overflow-auto px-3 py-2">
                             {validationWarnings.length === 0 ? (
                               <div className="flex items-center gap-2 text-sm text-green-700">
@@ -3918,133 +4252,147 @@ export function MenuPackageBuilder({
               )}
 
               {activeBuilderTab === 'cost-summary' && (
-                <div className="space-y-3">
-                  <section className={`rounded border px-3 py-2 ${reviewVerdict.className}`}>
-                    <div className="text-sm font-semibold">{reviewVerdict.label}</div>
-                    <div className="mt-0.5 text-xs">{reviewVerdict.detail}</div>
-                  </section>
+                <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_320px]">
+                  <div className="space-y-2">
+                    <section className={`rounded border px-3 py-2 ${reviewVerdict.className}`}>
+                      <div className="text-sm font-semibold">{reviewVerdict.label}</div>
+                      <div className="mt-0.5 text-xs">{reviewVerdict.detail}</div>
+                    </section>
 
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-[0.8fr_1.2fr]">
-                    <div className="rounded border border-slate-200 bg-white p-3">
-                      <label className={compactLabelClass}>Selling Price Per Guest * (Rs.)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={formSellingPricePerHead}
-                        onChange={(event) => setFormSellingPricePerHead(Number(event.target.value))}
-                        disabled={viewMode}
-                        placeholder="0.00"
-                        className={compactInputClass}
-                      />
-                    </div>
-
-                    <div className="rounded border border-slate-200 bg-white p-3">
-                      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                        <ChefHat className="w-4 h-4" />
-                        Preparation Area Breakdown
-                      </h3>
-                      {Object.keys(getPreparationAreaSummary()).length === 0 ? (
-                        <p className="text-sm text-slate-500">No dishes selected yet.</p>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {Object.entries(getPreparationAreaSummary()).map(([area, count]) => (
-                            <span key={area} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs">
-                              <span className="text-slate-600">{area.replace(/-/g, ' ')}:</span>{' '}
-                              <span className="font-medium text-slate-900">{count} lines</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <section className="rounded border border-blue-200 bg-blue-50">
-                    <div className="flex items-center gap-2 border-b border-blue-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                      <Calculator className="w-4 h-4" />
-                      Package Costing Summary
-                    </div>
-                    <div className="grid grid-cols-2 gap-0.5 bg-blue-200/40 p-0.5 lg:grid-cols-6">
-                      {[
-                        { label: 'Fixed Items', value: packageDishes.length },
-                        { label: 'Choice Groups', value: choiceGroups.length },
-                        { label: 'Fixed Cost/Guest', value: `Rs. ${menuEstimateFixedCostPerHead.toFixed(2)}` },
-                        { label: 'Choice Cost/Guest', value: `Rs. ${menuEstimateChoiceCostPerHead.toFixed(2)}` },
-                        { label: 'Total Cost/Guest', value: `Rs. ${menuEstimateCostPerHead.toFixed(2)}` },
-                        {
-                          label: 'Margin',
-                          value: formSellingPricePerHead > 0 ? `${calculateMargin().toFixed(1)}%` : 'Pending price',
-                          valueClassName:
-                            formSellingPricePerHead <= 0
-                              ? 'text-amber-600'
-                              : calculateMargin() >= TARGET_MARGIN_PERCENT
-                                ? 'text-green-600'
-                                : 'text-red-600',
-                        },
-                      ].map((item) => (
-                        <div key={item.label} className="bg-white px-2.5 py-2">
-                          <p className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</p>
-                          <p className={`text-sm font-semibold text-slate-900 ${item.valueClassName || ''}`}>{item.value}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-
-                  {choiceGroups.length > 0 && (
                     <section className="rounded border border-slate-200 bg-white">
                       <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                        Choice Group Planning Assumptions
+                        Final Package Summary
                       </div>
-                      <div className="space-y-1.5 p-3">
-                        {choiceGroups.map((choiceGroup) => (
-                          <div
-                            key={choiceGroup.id}
-                            className="grid gap-1 rounded border border-slate-200 px-2.5 py-2 text-sm md:grid-cols-[minmax(0,1fr)_190px_92px]"
-                          >
-                            <div className="min-w-0">
-                              <div className="font-medium text-slate-900">{choiceGroup.groupName || 'Unnamed Choice Group'}</div>
-                              <div className="truncate text-[11px] text-slate-500" title={formatChoiceGroupDishSummary(choiceGroup, 12)}>
-                                {formatChoiceGroupDishSummary(choiceGroup, 12)}
-                              </div>
-                            </div>
-                            <div className="text-slate-600">
-                              <div>{CHOICE_GROUP_COSTING_METHOD_LABELS[choiceGroup.costingMethod]}</div>
-                              <div className="truncate text-[11px] text-slate-500">
-                                {getMenuEstimateChoiceSelection(choiceGroup)
-                                  ? choiceGroup.dishes.find((dish) => dish.dishId === getMenuEstimateChoiceSelection(choiceGroup))?.dishName || 'No item selected'
-                                  : 'No item selected'}
-                              </div>
-                            </div>
-                            <div className="text-right font-medium text-slate-900">
-                              Rs. {calculateChoiceGroupMenuEstimateCostPerHead(choiceGroup).toFixed(2)}
-                            </div>
+                      <div className="grid grid-cols-2 gap-px bg-slate-200 p-px lg:grid-cols-4">
+                        {[
+                          { label: 'Package Name', value: formPackageName || 'Untitled' },
+                          { label: 'Baseline Guests', value: formBaselineGuests },
+                          { label: 'Total Cost', value: `Rs. ${menuEstimateTotalCost.toFixed(2)}` },
+                          { label: 'Cost/Guest', value: `Rs. ${menuEstimateCostPerHead.toFixed(2)}` },
+                          { label: 'Selling/Guest', value: packageSellingPerHead > 0 ? `Rs. ${packageSellingPerHead.toFixed(2)}` : 'Pending' },
+                          { label: 'Margin/Guest', value: packageSellingPerHead > 0 ? `Rs. ${packageMarginPerHead.toFixed(2)}` : 'Pending' },
+                          { label: 'Food Cost %', value: packageSellingPerHead > 0 ? `${packageFoodCostPercent.toFixed(1)}%` : 'Pending' },
+                          { label: 'Package Profit', value: packageSellingTotal > 0 ? `Rs. ${packageProfit.toFixed(2)}` : 'Pending' },
+                          { label: 'Status', value: packageCommercialStatus.label },
+                        ].map((item) => (
+                          <div key={item.label} className="bg-white px-2.5 py-2">
+                            <div className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</div>
+                            <div className="text-sm font-semibold text-slate-900 break-words">{item.value}</div>
                           </div>
                         ))}
                       </div>
                     </section>
-                  )}
+
+                    <section className="rounded border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                        Review Checks
+                      </div>
+                      <div className="space-y-1.5 p-3">
+                        {validationSummaryItems.length === 0 ? (
+                          <div className="flex items-center gap-2 text-sm text-green-700">
+                            <CheckCircle2 className="size-4" />
+                            All approval checks are clear.
+                          </div>
+                        ) : (
+                          validationSummaryItems.slice(0, 12).map((item) => (
+                            <div key={item.id} className="flex items-start gap-2 text-sm">
+                              <AlertTriangle className={`mt-0.5 size-4 shrink-0 ${item.tone === 'blocked' ? 'text-red-600' : 'text-amber-600'}`} />
+                              <span className={item.tone === 'blocked' ? 'text-red-800' : 'text-amber-800'}>{item.label}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="rounded border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                        Preparation Area Breakdown
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 px-3 py-2">
+                        {Object.keys(getPreparationAreaSummary()).length === 0 ? (
+                          <span className="text-sm text-slate-500">No dishes selected yet.</span>
+                        ) : (
+                          Object.entries(getPreparationAreaSummary()).map(([area, count]) => (
+                            <span key={area} className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs">
+                              <span className="text-slate-600">{area.replace(/-/g, ' ')}:</span>{' '}
+                              <span className="font-medium text-slate-900">{count} lines</span>
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </section>
+
+                    {choiceGroups.length > 0 && (
+                      <section className="rounded border border-slate-200 bg-white">
+                        <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                          Choice Group Assumptions
+                        </div>
+                        <div className="space-y-1.5 p-3">
+                          {choiceGroups.map((choiceGroup) => (
+                            <div
+                              key={choiceGroup.id}
+                              className="grid gap-1 rounded border border-slate-200 px-2.5 py-2 text-sm md:grid-cols-[minmax(0,1fr)_190px_92px]"
+                            >
+                              <div className="min-w-0">
+                                <div className="font-medium text-slate-900">{choiceGroup.groupName || 'Unnamed Choice Group'}</div>
+                                <div className="truncate text-[11px] text-slate-500" title={formatChoiceGroupDishSummary(choiceGroup, 12)}>
+                                  {formatChoiceGroupDishSummary(choiceGroup, 12)}
+                                </div>
+                              </div>
+                              <div className="text-slate-600">
+                                <div>{CHOICE_GROUP_COSTING_METHOD_LABELS[choiceGroup.costingMethod]}</div>
+                                <div className="truncate text-[11px] text-slate-500">
+                                  {getMenuEstimateChoiceSelection(choiceGroup)
+                                    ? choiceGroup.dishes.find((dish) => dish.dishId === getMenuEstimateChoiceSelection(choiceGroup))?.dishName || 'No item selected'
+                                    : 'No item selected'}
+                                </div>
+                              </div>
+                              <div className="text-right font-medium text-slate-900">
+                                Rs. {calculateChoiceGroupMenuEstimateCostPerHead(choiceGroup).toFixed(2)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 xl:sticky xl:top-0 xl:self-start">
+                    <section className="rounded border border-slate-200 bg-white">
+                      <div className="border-b border-slate-200 px-2.5 py-1.5">
+                        <h3 className="text-sm font-semibold text-slate-900">Approval Summary</h3>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {summaryMetricItems.map((item) => (
+                          <div key={item.label} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-sm">
+                            <span className="text-slate-600">{item.label}</span>
+                            <span className={`font-semibold text-slate-900 ${item.valueClassName || ''}`}>{item.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="border-t border-slate-200 px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2 text-sm">
+                          <span className="text-slate-600">Commercial Status</span>
+                          <span className={`inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${packageCommercialStatus.className}`}>
+                            {packageCommercialStatus.label}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2 text-sm">
+                          <span className="text-slate-600">Approval Gate</span>
+                          <span className={`font-semibold ${canApprovePackage ? 'text-green-700' : 'text-red-600'}`}>
+                            {canApprovePackage ? 'Ready' : 'Blocked'}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2">
               <div className="text-xs text-slate-600">
-                {activeBuilderTab === 'menu-items' ? (
-                  <>
-                    Fixed: <span className="font-semibold text-slate-900">{packageDishes.length}</span>
-                    {' '}| Choice Groups: <span className="font-semibold text-slate-900">{choiceGroups.length}</span>
-                    {' '}| Menu Lines: <span className="font-semibold text-slate-900">{totalSelectedLines}</span>
-                    {' '}| Active Group: <span className="font-semibold text-slate-900">{activeChoiceGroup?.groupName || 'None selected'}</span>
-                  </>
-                ) : (
-                  <>
-                    Fixed: <span className="font-semibold text-slate-900">{packageDishes.length}</span>
-                    {' '}| Choice Groups: <span className="font-semibold text-slate-900">{choiceGroups.length}</span>
-                    {' '}| Cost/guest: <span className="font-semibold text-slate-900">Rs. {menuEstimateCostPerHead.toFixed(2)}</span>
-                    {' '}| Total Menu Cost: <span className="font-semibold text-slate-900">Rs. {calculateTotalMenuCost().toFixed(2)}</span>
-                    {' '}| Price/guest: <span className="font-semibold text-slate-900">{formSellingPricePerHead > 0 ? `Rs. ${formSellingPricePerHead.toFixed(2)}` : 'Pending price'}</span>
-                    {' '}| Margin: <span className={`font-semibold ${formSellingPricePerHead <= 0 ? 'text-amber-600' : calculateMargin() >= TARGET_MARGIN_PERCENT ? 'text-green-600' : 'text-red-600'}`}>{formSellingPricePerHead > 0 ? `${calculateMargin().toFixed(1)}%` : 'Pending price'}</span>
-                  </>
-                )}
+                {BUILDER_TABS.find((tab) => tab.id === activeBuilderTab)?.step} | {BUILDER_TABS.find((tab) => tab.id === activeBuilderTab)?.label}
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={() => setDialogOpen(false)} className={compactSecondaryButtonClass}>
@@ -4059,6 +4407,58 @@ export function MenuPackageBuilder({
               </div>
             </div>
           </div>
+
+          {pendingAddDishIds.length > 0 && (
+            <div className="fixed inset-0 z-[55] flex items-center justify-center bg-black/30 p-4">
+              <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Add Menu Item</h3>
+                    <p className="text-[11px] text-slate-500">Choose whether the selected dish belongs in a fixed line or a choice group.</p>
+                  </div>
+                  <button type="button" onClick={closeAddDishDialog} className="inline-flex size-8 items-center justify-center rounded text-slate-500 hover:bg-slate-100">
+                    <X className="size-4" />
+                  </button>
+                </div>
+                <div className="space-y-3 px-4 py-4">
+                  <button type="button" onClick={handleConfirmAddToFixedItems} className={`${compactPrimaryButtonClass} w-full justify-center`}>
+                    Add as Fixed Item
+                  </button>
+                  <div>
+                    <label className={compactLabelClass}>Choice Group</label>
+                    <select
+                      value={pendingAddChoiceGroupId}
+                      onChange={(event) => setPendingAddChoiceGroupId(event.target.value)}
+                      className={compactInputClass}
+                    >
+                      <option value="">Select choice group</option>
+                      {choiceGroups.map((choiceGroup) => (
+                        <option key={choiceGroup.id} value={choiceGroup.id}>
+                          {choiceGroup.groupName || 'Unnamed Group'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleConfirmAddToChoiceGroup}
+                      disabled={!pendingAddChoiceGroupId}
+                      className={`${compactOutlineAccentButtonClass} flex-1 justify-center`}
+                    >
+                      Add to Choice Group
+                    </button>
+                    {!viewMode ? (
+                      <button type="button" onClick={handleAddChoiceGroup} className={compactSecondaryButtonClass}>
+                        <Plus className="h-4 w-4" />
+                        New Group
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {choiceGroupEditorOpen && activeChoiceGroup ? (
             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">

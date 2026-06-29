@@ -211,6 +211,45 @@ export interface MenuPackageTypeMaster {
   updatedAt: Date;
 }
 
+export type ProductionCostMethodAppliesTo = RecipeCostLineCategory | 'all';
+export type ProductionCostMethodCostType = RecipeCostLineCategory;
+export type ProductionCostMethodCalculationType =
+  | 'fixed'
+  | 'per-batch'
+  | 'per-daig'
+  | 'per-kg-output'
+  | 'per-piece-output'
+  | 'per-guest'
+  | 'per-hour'
+  | 'per-person'
+  | 'per-purchase-kg'
+  | 'per-event';
+export type ProductionCostMethodInputRequired =
+  | 'amount'
+  | 'rate'
+  | 'quantity'
+  | 'recipe-yield'
+  | 'ingredient-reference';
+
+export interface ProductionCostMethod {
+  id: string;
+  methodName: string;
+  methodCode: string;
+  appliesTo: ProductionCostMethodAppliesTo;
+  costType?: ProductionCostMethodCostType;
+  calculationType: ProductionCostMethodCalculationType;
+  consumesInventory?: boolean;
+  referenceUnit?: string;
+  inputRequired: ProductionCostMethodInputRequired[];
+  status: 'active' | 'inactive';
+  sortOrder: number;
+  notes?: string;
+  description?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface UnitMaster {
   id: string;
   code: string;
@@ -340,23 +379,29 @@ export type RecipeCostLineBasis =
   | 'fixed-daig-capacity'
   | 'per-kg-yield'
   | 'per-kg-output'
+  | 'per-piece-output'
   | 'per-kg-input'
+  | 'per-purchase-kg'
   | 'per-batch'
   | 'per-daig'
+  | 'per-guest'
   | 'per-hour'
   | 'per-person'
-  | 'per-head';
+  | 'per-head'
+  | 'per-event';
 
 export interface RecipeCostLine {
   id: string;
   category: RecipeCostLineCategory;
   name: string;
   calculationBasis: RecipeCostLineBasis;
+  calculationMethodId?: string;
   rate: number;
   quantity?: number;
   capacityQuantity?: number;
   unit?: string;
   ingredientReferenceId?: string;
+  sortOrder?: number;
   totalCost: number;
 }
 
@@ -391,6 +436,9 @@ export interface Recipe {
   wastageCost?: number;
   laborCost?: number;
   utilitiesCost?: number;
+  utilityCostEnabled?: boolean;
+  packagingCostEnabled?: boolean;
+  otherProductionCostEnabled?: boolean;
   additionalCost?: number;
   additionalCostLines?: RecipeCostLine[];
   totalRecipeCost?: number;
@@ -401,6 +449,8 @@ export interface Recipe {
   supplyMarginPerYieldUnit?: number;
   supplySellingPricePerYieldUnit?: number;
   supplyFoodCostPercentage?: number;
+  pricingEvaluationMode?: 'profit-percent' | 'profit-per-unit';
+  pricingEvaluationValue?: number;
   suggestedSellingPrice?: number;
   foodCostPercentage?: number;
   createdBy: string;
@@ -490,6 +540,7 @@ export interface MenuPackage {
   totalCostPerHead: number;
   sellingPricePerHead: number;
   menuEstimate?: MenuPackageMenuEstimate;
+  commercialPricing?: MenuPackageCommercialPricing;
   chefEstimate?: LegacyMenuPackageChefEstimate;
   
   status: 'draft' | 'approved' | 'inactive';
@@ -514,6 +565,13 @@ export interface MenuPackageMenuEstimate {
   choiceGroupQuantities: Record<string, number>;
   choiceGroupUnits?: Record<string, string>;
   choiceGroupSelections: Record<string, string | undefined>;
+  updatedBy: string;
+  updatedAt: Date;
+}
+
+export interface MenuPackageCommercialPricing {
+  fixedItemSellingPrices?: Record<string, number>;
+  choiceGroupSellingPrices?: Record<string, number>;
   updatedBy: string;
   updatedAt: Date;
 }
@@ -835,6 +893,11 @@ export interface KitchenIssueSheetItem {
   shortageQuantity: number;
   availableQuantity: number;
   linkedDishes: string[];
+  usageSources?: Array<{
+    kind: 'ingredient' | 'resale' | RecipeCostLineCategory;
+    label: string;
+    methodName?: string;
+  }>;
 }
 
 export interface CentralKitchenRequisition {

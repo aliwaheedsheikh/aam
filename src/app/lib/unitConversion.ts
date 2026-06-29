@@ -1,5 +1,44 @@
 import type { UnitFamily, UnitMaster } from '../components/kitchen/types';
 
+const unitAliases: Record<string, string> = {
+  g: 'gm',
+  gram: 'gm',
+  grams: 'gm',
+  kilogram: 'kg',
+  kilograms: 'kg',
+  kilo: 'kg',
+  kilos: 'kg',
+  l: 'liter',
+  ltr: 'liter',
+  liter: 'liter',
+  liters: 'liter',
+  litre: 'liter',
+  litres: 'liter',
+  milliliter: 'ml',
+  milliliters: 'ml',
+  millilitre: 'ml',
+  millilitres: 'ml',
+  no: 'no',
+  nos: 'no',
+  number: 'no',
+  numbers: 'no',
+  pc: 'pcs',
+  piece: 'pcs',
+  pieces: 'pcs',
+  pkt: 'packet',
+  packet: 'packet',
+  btl: 'bottle',
+  bottle: 'bottle',
+  guest: 'per-guest',
+  head: 'per-head',
+  portion: 'per-portion',
+};
+
+export const normalizeUnitCode = (value?: string | null) => {
+  const normalized = (value || '').trim().toLowerCase().replace(/\s+/g, '-');
+  return unitAliases[normalized] || normalized;
+};
+
 const createSystemUnit = (
   code: string,
   name: string,
@@ -26,7 +65,7 @@ const createSystemUnit = (
   updatedAt: new Date('2024-01-01'),
 });
 
-export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [
+const SYSTEM_UNIT_DICTIONARY: UnitMaster[] = [
   createSystemUnit('gm', 'Gram', 'gm', 'weight', {
     baseUnitCode: 'gm',
     conversionToBase: 1,
@@ -49,9 +88,17 @@ export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [
     allowRecipe: true,
     allowYield: true,
   }),
-  createSystemUnit('ltr', 'Liter', 'ltr', 'volume', {
+  createSystemUnit('liter', 'Liter', 'ltr', 'volume', {
     baseUnitCode: 'ml',
     conversionToBase: 1000,
+    allowPurchase: true,
+    allowIssue: true,
+    allowRecipe: true,
+    allowYield: true,
+  }),
+  createSystemUnit('no', 'Number', 'no', 'count', {
+    baseUnitCode: 'pcs',
+    conversionToBase: 1,
     allowPurchase: true,
     allowIssue: true,
     allowRecipe: true,
@@ -81,6 +128,23 @@ export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [
     allowRecipe: true,
     allowYield: true,
   }),
+  createSystemUnit('bunch', 'Bunch', 'bunch', 'package', {
+    baseUnitCode: 'bunch',
+    conversionToBase: 1,
+    allowPurchase: true,
+    allowIssue: true,
+    allowRecipe: true,
+    allowYield: true,
+  }),
+  createSystemUnit('bottle', 'Bottle', 'btl', 'package', {
+    baseUnitCode: 'bottle',
+    conversionToBase: 1,
+    allowPurchase: true,
+    allowIssue: true,
+    allowRecipe: true,
+    allowYield: true,
+    allowSales: true,
+  }),
   createSystemUnit('tray', 'Tray', 'tray', 'package', {
     baseUnitCode: 'tray',
     conversionToBase: 1,
@@ -90,22 +154,18 @@ export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [
     allowYield: true,
     allowSales: true,
   }),
-  createSystemUnit('bunch', 'Bunch', 'bunch', 'package', {
-    baseUnitCode: 'bunch',
+  createSystemUnit('plate', 'Plate', 'plate', 'package', {
+    baseUnitCode: 'plate',
     conversionToBase: 1,
     allowPurchase: true,
     allowIssue: true,
     allowRecipe: true,
     allowYield: true,
-  }),
-  createSystemUnit('plate', 'Plate', 'plate', 'package', {
-    baseUnitCode: 'plate',
-    conversionToBase: 1,
-    allowIssue: true,
-    allowRecipe: true,
-    allowYield: true,
     allowSales: true,
   }),
+];
+
+const LEGACY_COMPATIBILITY_UNITS: UnitMaster[] = [
   createSystemUnit('per-head', 'Per Head', 'head', 'service', { allowSales: true }),
   createSystemUnit('per-guest', 'Per Guest', 'guest', 'service', { allowSales: true }),
   createSystemUnit('per-portion', 'Per Portion', 'portion', 'service', { allowSales: true }),
@@ -119,41 +179,64 @@ export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [
   createSystemUnit('fixed-event', 'Fixed Event', 'event', 'service', { allowSales: true }),
 ];
 
-const unitAliases: Record<string, string> = {
-  g: 'gm',
-  gram: 'gm',
-  grams: 'gm',
-  kilogram: 'kg',
-  kilograms: 'kg',
-  kilo: 'kg',
-  kilos: 'kg',
-  l: 'ltr',
-  liter: 'ltr',
-  liters: 'ltr',
-  litre: 'ltr',
-  litres: 'ltr',
-  milliliter: 'ml',
-  milliliters: 'ml',
-  millilitre: 'ml',
-  millilitres: 'ml',
-  pc: 'pcs',
-  piece: 'pcs',
-  pieces: 'pcs',
-  guest: 'per-guest',
-  head: 'per-head',
-  portion: 'per-portion',
+const SYSTEM_UNIT_DICTIONARY_CODE_SET = new Set(SYSTEM_UNIT_DICTIONARY.map((unit) => unit.code));
+
+const mergeIntoManagedUnit = (defaultUnit: UnitMaster, existingUnit?: UnitMaster): UnitMaster => {
+  if (!existingUnit) {
+    return defaultUnit;
+  }
+
+  return {
+    ...existingUnit,
+    code: defaultUnit.code,
+    name: defaultUnit.name,
+    symbol: defaultUnit.symbol,
+    family: defaultUnit.family,
+    baseUnitCode: defaultUnit.baseUnitCode,
+    conversionToBase: defaultUnit.conversionToBase,
+  };
 };
 
-export const normalizeUnitCode = (value?: string | null) => {
-  const normalized = (value || '').trim().toLowerCase().replace(/\s+/g, '-');
-  return unitAliases[normalized] || normalized;
+export const DEFAULT_UNIT_MASTERS: UnitMaster[] = [...SYSTEM_UNIT_DICTIONARY, ...LEGACY_COMPATIBILITY_UNITS];
+
+export const resolveUnitCatalog = (units?: UnitMaster[]) => {
+  const sourceUnits = units && units.length > 0 ? units : DEFAULT_UNIT_MASTERS;
+  const resolvedUnits = [...sourceUnits];
+  const seenCodes = new Set(sourceUnits.map((unit) => normalizeUnitCode(unit.code)));
+
+  DEFAULT_UNIT_MASTERS.forEach((unit) => {
+    if (!seenCodes.has(unit.code)) {
+      resolvedUnits.push(unit);
+      seenCodes.add(unit.code);
+    }
+  });
+
+  return resolvedUnits;
 };
 
-export const resolveUnitCatalog = (units?: UnitMaster[]) => (units && units.length > 0 ? units : DEFAULT_UNIT_MASTERS);
+export const isSystemUnitDictionaryUnit = (unit: Pick<UnitMaster, 'code' | 'family'>) =>
+  unit.family !== 'service' && SYSTEM_UNIT_DICTIONARY_CODE_SET.has(normalizeUnitCode(unit.code));
+
+export const getUnitSetupCatalog = (units?: UnitMaster[]) => {
+  const catalog = resolveUnitCatalog(units);
+  const unitsByCode = new Map<string, UnitMaster>();
+
+  catalog.forEach((unit) => {
+    const normalizedCode = normalizeUnitCode(unit.code);
+    if (!unitsByCode.has(normalizedCode)) {
+      unitsByCode.set(normalizedCode, unit);
+    }
+  });
+
+  return SYSTEM_UNIT_DICTIONARY.map((defaultUnit) => mergeIntoManagedUnit(defaultUnit, unitsByCode.get(defaultUnit.code)));
+};
+
+export const getHiddenCompatibilityUnits = (units?: UnitMaster[]) =>
+  (units || []).filter((unit) => !isSystemUnitDictionaryUnit(unit));
 
 export const getUnitByCode = (code: string | undefined, units?: UnitMaster[]) => {
   const normalizedCode = normalizeUnitCode(code);
-  return resolveUnitCatalog(units).find((unit) => unit.code === normalizedCode);
+  return resolveUnitCatalog(units).find((unit) => normalizeUnitCode(unit.code) === normalizedCode);
 };
 
 export const getActiveUnits = (units?: UnitMaster[]) =>
@@ -211,7 +294,7 @@ export const convertUnitQuantity = (
     return null;
   }
 
-  if (!fromUnit.baseUnitCode || !toUnit.baseUnitCode || fromUnit.baseUnitCode !== toUnit.baseUnitCode) {
+  if (!fromUnit.baseUnitCode || !toUnit.baseUnitCode || normalizeUnitCode(fromUnit.baseUnitCode) !== normalizeUnitCode(toUnit.baseUnitCode)) {
     return null;
   }
 
@@ -222,7 +305,7 @@ export const convertUnitQuantity = (
 };
 
 export const ensureSelectedUnitOption = (options: UnitMaster[], code?: string) => {
-  if (!code || options.some((option) => option.code === code)) {
+  if (!code || options.some((option) => normalizeUnitCode(option.code) === normalizeUnitCode(code))) {
     return options;
   }
 

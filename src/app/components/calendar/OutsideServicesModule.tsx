@@ -885,17 +885,46 @@ function OutsideServicesOrderForm({
   onClose: () => void;
   onSave: (booking: ServiceBooking) => void;
 }) {
+  const [masterDataRevision, setMasterDataRevision] = useState(0);
   const [storedCustomers] = usePersistedWorkflowState<Customer[]>(
     WORKFLOW_STATE_KEYS.customerDatabase,
     SAMPLE_CUSTOMERS,
   );
+
+  useEffect(() => {
+    const bumpMasterDataRevision = () => {
+      setMasterDataRevision((current) => current + 1);
+    };
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key.includes('rcs')) {
+        bumpMasterDataRevision();
+      }
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (!event.key || event.key.includes('rcs')) {
+        bumpMasterDataRevision();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
   const activeRcsSetupServices = useMemo(() => {
     const categoryMap = new Map(loadSetupRcsCategories().map((category) => [category.id, category]));
     return loadSetupRcsServices().filter((service) => {
       const category = service.categoryId ? categoryMap.get(service.categoryId) : undefined;
       return service.isActive !== false && service.showInReservation !== false && category?.showInReservation !== false;
     });
-  }, []);
+  }, [masterDataRevision]);
   const initialDraft = useMemo(() => normalizeOrderDraft(initialBooking), [initialBooking]);
   const [activeSection, setActiveSection] = useState<SectionKey>('customer-info');
   const [draft, setDraft] = useState<OrderDraft>(initialDraft);

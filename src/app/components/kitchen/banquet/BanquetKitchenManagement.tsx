@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ChefHat, List, Package, UtensilsCrossed, FileText, GitBranch, Tags } from 'lucide-react';
-import { Cuisine, Dish, PurchaseItem, Recipe, MenuPackage, KitchenStation, KitchenDishCategory, MenuPackageTypeMaster, Vendor, StoreMaster, StoreStock, UnitMaster, ProcurementLookupState, VendorItemMapping } from '../types';
+import { ChefHat, List, Package, UtensilsCrossed, FileText, GitBranch, Tags, Calculator, Settings2 } from 'lucide-react';
+import { Cuisine, Dish, PurchaseItem, Recipe, MenuPackage, KitchenStation, KitchenDishCategory, MenuPackageTypeMaster, ProductionCostMethod, Vendor, StoreMaster, StoreStock, UnitMaster, ProcurementLookupState, VendorItemMapping } from '../types';
 import { CuisineMaster } from '../shared/CuisineMaster';
 import { DishCategoryMaster } from '../shared/DishCategoryMaster';
 import { KitchenStationMaster } from '../shared/KitchenStationMaster';
@@ -8,6 +8,8 @@ import { PurchaseItemMaster } from '../shared/PurchaseItemMaster';
 import { BanquetDishMaster } from './BanquetDishMaster';
 import { RecipeCosting } from './RecipeCosting';
 import { MenuPackageBuilder } from './MenuPackageBuilder';
+import { GuestCountPricingEngine } from './GuestCountPricingEngine';
+import { ProductionCostMethodMaster } from './ProductionCostMethodMaster';
 
 const BANQUET_KITCHEN_SUBMODULE_STORAGE_KEY = 'venueops:banquet-kitchen-submodule';
 
@@ -25,6 +27,7 @@ interface BanquetKitchenManagementProps {
   vendorItemMappings: VendorItemMapping[];
   procurementLookups: ProcurementLookupState;
   recipes: Recipe[];
+  productionCostMethods: ProductionCostMethod[];
   menuPackages: MenuPackage[];
   menuPackageTypes: MenuPackageTypeMaster[];
   onCuisinesChange: (cuisines: Cuisine[]) => void;
@@ -37,6 +40,7 @@ interface BanquetKitchenManagementProps {
   onProcurementLookupsChange: (lookups: ProcurementLookupState) => void;
   onStoreStocksChange: (stocks: StoreStock[]) => void;
   onRecipesChange: (recipes: Recipe[]) => void;
+  onProductionCostMethodsChange: (methods: ProductionCostMethod[]) => void;
   onMenuPackagesChange: (packages: MenuPackage[]) => void;
   onMenuPackageTypesChange: (types: MenuPackageTypeMaster[]) => void;
 }
@@ -47,7 +51,9 @@ type SubModule =
   | 'kitchen-stations'
   | 'dish-master'
   | 'recipe-costing'
+  | 'production-cost-methods'
   | 'menu-builder'
+  | 'guest-pricing'
   | 'purchase-items';
 
 export function BanquetKitchenManagement({
@@ -64,6 +70,7 @@ export function BanquetKitchenManagement({
   vendorItemMappings,
   procurementLookups,
   recipes,
+  productionCostMethods,
   menuPackages,
   menuPackageTypes,
   onCuisinesChange,
@@ -76,6 +83,7 @@ export function BanquetKitchenManagement({
   onProcurementLookupsChange,
   onStoreStocksChange,
   onRecipesChange,
+  onProductionCostMethodsChange,
   onMenuPackagesChange,
   onMenuPackageTypesChange,
 }: BanquetKitchenManagementProps) {
@@ -94,7 +102,9 @@ export function BanquetKitchenManagement({
     { id: 'kitchen-stations' as SubModule, name: 'Kitchen Stations', icon: GitBranch },
     { id: 'dish-master' as SubModule, name: 'Dish Master', icon: UtensilsCrossed },
     { id: 'recipe-costing' as SubModule, name: 'Recipe & Costing', icon: FileText },
+    { id: 'production-cost-methods' as SubModule, name: 'Production Cost Methods', icon: Settings2 },
     { id: 'menu-builder' as SubModule, name: 'Menu Package Builder', icon: ChefHat },
+    { id: 'guest-pricing' as SubModule, name: 'Menu Guest Count Rate Evaluation', icon: Calculator },
     { id: 'purchase-items' as SubModule, name: 'Purchase Items', icon: Package },
   ];
 
@@ -171,10 +181,21 @@ export function BanquetKitchenManagement({
             recipes={recipes}
             purchaseItems={purchaseItems}
             units={units}
+            productionCostMethods={productionCostMethods}
             menuPackages={menuPackages}
             onDishesChange={onDishesChange}
             onRecipesChange={onRecipesChange}
             onMenuPackagesChange={onMenuPackagesChange}
+          />
+        );
+
+      case 'production-cost-methods':
+        return (
+          <ProductionCostMethodMaster
+            userName={userName}
+            methods={productionCostMethods}
+            recipes={recipes}
+            onMethodsChange={onProductionCostMethodsChange}
           />
         );
 
@@ -192,6 +213,9 @@ export function BanquetKitchenManagement({
             onMenuPackageTypesChange={onMenuPackageTypesChange}
           />
         );
+
+      case 'guest-pricing':
+        return <GuestCountPricingEngine menuPackages={menuPackages} />;
 
       case 'purchase-items':
         return (

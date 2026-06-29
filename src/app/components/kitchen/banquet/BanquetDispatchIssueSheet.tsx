@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Button } from '../../ui/button';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, ClipboardList, Clock, MapPin, Users } from 'lucide-react';
 import { Booking } from '../../calendar/types-v2';
-import { Dish, KitchenIssueSheet, MenuPackage, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
+import { Dish, KitchenIssueSheet, MenuPackage, ProductionCostMethod, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
 import { buildBanquetProductionPlans } from './productionFlow';
 import { formatDatePK, formatNumberPK } from '../../../lib/locale';
 import { getStoreDisplayName } from '../../../lib/storeMaster';
@@ -13,6 +13,7 @@ interface BanquetDispatchIssueSheetProps {
   stores: StoreMaster[];
   recipes: Recipe[];
   menuPackages: MenuPackage[];
+  productionCostMethods: ProductionCostMethod[];
   purchaseItems: PurchaseItem[];
   storeStocks: StoreStock[];
   units: UnitMaster[];
@@ -36,12 +37,17 @@ const getStatusMeta = (status: string) => {
   }
 };
 
+const formatUsageSources = (
+  usageSources?: Array<{ label: string }>,
+) => (usageSources && usageSources.length > 0 ? usageSources.map((source) => source.label).join(', ') : '');
+
 export function BanquetDispatchIssueSheet({
   bookings,
   dishes,
   stores,
   recipes,
   menuPackages,
+  productionCostMethods,
   purchaseItems,
   storeStocks,
   units,
@@ -57,12 +63,13 @@ export function BanquetDispatchIssueSheet({
         dishes,
         recipes,
         menuPackages,
+        productionCostMethods,
         purchaseItems,
         storeStocks,
         units,
         issueSheets,
       }),
-    [bookings, selectedDate, dishes, recipes, menuPackages, purchaseItems, storeStocks, units, issueSheets],
+    [bookings, selectedDate, dishes, recipes, menuPackages, productionCostMethods, purchaseItems, storeStocks, units, issueSheets],
   );
 
   const issueSheetsForDate = useMemo(
@@ -281,6 +288,9 @@ export function BanquetDispatchIssueSheet({
                             <td className="px-4 py-3 text-gray-700">
                               {lineItem.itemName}
                               <div className="text-xs text-gray-500">{lineItem.linkedDishes.join(', ')}</div>
+                              {lineItem.usageSources && lineItem.usageSources.length > 0 ? (
+                                <div className="text-xs text-gray-500">{formatUsageSources(lineItem.usageSources)}</div>
+                              ) : null}
                             </td>
                             <td className="px-4 py-3 text-gray-700">{getStoreDisplayName(stores, lineItem.sourceStore)}</td>
                             <td className="px-4 py-3 text-right text-gray-700">

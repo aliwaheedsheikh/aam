@@ -1,10 +1,19 @@
 import { calculateStandardRecipeMetrics } from './recipeCostingMath.js';
+import {
+  getDefaultProductionCostMethodUnit,
+  isProductionCostMethodQuantityEditable,
+  normalizeRecipeCostLineBasis,
+  resolveProductionCostMethodFromLine,
+  shouldProductionCostMethodShowReference,
+} from './productionCostMethods';
 import { convertUnitQuantity } from './unitConversion';
 import type {
   Dish,
   MeasurementUnit,
   MenuItemVariant,
   MenuPackage,
+  MenuPackageChoiceGroup,
+  ProductionCostMethod,
   PurchaseItem,
   Recipe,
   RecipeCostLine,
@@ -88,6 +97,33 @@ const getPurchaseItemUnitCost = (item: PurchaseItem, units: UnitMaster[] = []) =
 
 const getPurchaseItemLastPurchaseRate = (item?: PurchaseItem) =>
   item ? item.lastPurchaseRate || item.lastCost || item.defaultPurchaseCost || 0 : 0;
+
+const getPurchaseItemRateForUnit = (
+  item: PurchaseItem | undefined,
+  unitId: MeasurementUnit | undefined,
+  units: UnitMaster[] = [],
+) => {
+  if (!item) {
+    return 0;
+  }
+
+  const purchaseRate = getPurchaseItemLastPurchaseRate(item);
+  const purchaseUnitId = getPurchaseItemPurchaseUnit(item);
+  if (!unitId || !purchaseUnitId || unitId === purchaseUnitId) {
+    return purchaseRate;
+  }
+
+  const convertedPurchaseQuantity = convertUnitQuantity(1, unitId, purchaseUnitId, units);
+  if (convertedPurchaseQuantity !== null && convertedPurchaseQuantity > 0) {
+    return purchaseRate * convertedPurchaseQuantity;
+  }
+
+  if (unitId === getBaseUnit(item)) {
+    return getPurchaseItemUnitCost(item, units);
+  }
+
+  return purchaseRate;
+};
 
 const getIngredientCategoryKey = (item: PurchaseItem) => item.categoryId || item.category || 'uncategorized';
 
@@ -230,18 +266,6 @@ const getRecipeEffectiveYieldQuantity = (recipe: Recipe) => {
   return yieldQuantity > 0 ? yieldQuantity * yieldFactor : 0;
 };
 
-const normalizeRecipeCostLineBasis = (basis?: string) => {
-  if (basis === 'fixed-daig-capacity') {
-    return 'per-batch';
-  }
-
-  if (basis === 'per-kg-yield') {
-    return 'per-kg-output';
-  }
-
-  return basis || 'fixed';
-};
-
 const resolveRecipeCostReferenceId = (
   referenceId: string | undefined,
   ingredients: RecipeIngredient[],
@@ -290,103 +314,61 @@ const findReferencedPurchaseItem = (
   return resolvedReferenceId ? purchaseItems.find((item) => item.id === resolvedReferenceId) : undefined;
 };
 
-const getReferencedIngredientQuantity = (
-  line: RecipeCostLine,
-  ingredients: RecipeIngredient[],
-  purchaseItems: PurchaseItem[],
-) => {
-  const ingredient = findReferencedIngredient(line, ingredients, purchaseItems);
-  return ingredient?.scaledEntryQuantity ?? ingredient?.entryQuantity ?? ingredient?.requiredQuantity ?? ingredient?.quantity ?? 0;
-};
-
-const getRecipeInputQuantityInKg = (
-  ingredients: RecipeIngredient[] = [],
-  units: UnitMaster[] = [],
-) =>
-  ingredients.reduce((sum, ingredient) => {
-    const entryQuantity =
-      ingredient.scaledEntryQuantity ??
-      ingredient.entryQuantity ??
-      ingredient.requiredQuantity ??
-      ingredient.quantity ??
-      0;
-    const entryUnitId = ingredient.entryUnitId || ingredient.unit || ingredient.baseUnitId;
-    const baseQuantity = ingredient.scaledBaseQuantity ?? ingredient.baseQuantity ?? 0;
-    const baseUnitId = ingredient.baseUnitId || ingredient.unit;
-    const entryKg =
-      entryQuantity > 0 && entryUnitId
-        ? convertUnitQuantity(entryQuantity, entryUnitId, 'kg', units)
-        : null;
-
-    if (entryKg !== null) {
-      return sum + Math.max(entryKg, 0);
-    }
-
-    const baseKg =
-      baseQuantity > 0 && baseUnitId
-        ? convertUnitQuantity(baseQuantity, baseUnitId, 'kg', units)
-        : null;
-
-    return sum + Math.max(baseKg || 0, 0);
-  }, 0);
-
 const syncStoredRecipeCostLine = (
   line: RecipeCostLine,
-  effectiveYieldQuantity: number,
   ingredients: RecipeIngredient[],
+  yieldUnitId: MeasurementUnit | undefined,
   purchaseItems: PurchaseItem[],
   units: UnitMaster[],
+  methods: ProductionCostMethod[],
 ): RecipeCostLine => {
-  const calculationBasis = normalizeRecipeCostLineBasis(line.calculationBasis);
+  const selectedMethod = resolveProductionCostMethodFromLine(line, methods);
+  const calculationBasis = (selectedMethod?.calculationType ||
+    normalizeRecipeCostLineBasis(line.calculationBasis)) as RecipeCostLine['calculationBasis'];
   const referencedIngredient = findReferencedIngredient(line, ingredients, purchaseItems);
   const referencedPurchaseItem = findReferencedPurchaseItem(line, ingredients, purchaseItems);
-  const referencedIngredientUnit =
-    referencedIngredient?.entryUnitId || referencedIngredient?.unit || referencedIngredient?.baseUnitId;
   const referencedUsageUnit =
     referencedPurchaseItem?.baseUnitId ||
     referencedPurchaseItem?.issueUnit ||
     referencedIngredient?.baseUnitId ||
     referencedIngredient?.unit ||
     referencedIngredient?.entryUnitId;
+  const supportsReference = shouldProductionCostMethodShowReference(selectedMethod, calculationBasis, line.category);
   const quantity =
-    calculationBasis === 'fixed' || calculationBasis === 'per-kg-output' || calculationBasis === 'per-kg-input'
+    !isProductionCostMethodQuantityEditable(selectedMethod, calculationBasis) ? 1 : line.quantity && line.quantity > 0 ? line.quantity : 1;
+  const defaultUnit =
+    supportsReference && referencedPurchaseItem
+      ? referencedPurchaseItem.purchaseUnitId || referencedPurchaseItem.purchaseUnit || getBaseUnit(referencedPurchaseItem)
+      : calculationBasis === 'item-usage'
+        ? referencedUsageUnit
+        : getDefaultProductionCostMethodUnit(selectedMethod, yieldUnitId || '');
+  const resolvedUnit =
+    calculationBasis === 'fixed'
       ? undefined
-      : line.quantity && line.quantity > 0
-        ? line.quantity
-        : 1;
+      : calculationBasis === 'per-event'
+        ? line.unit || 'event'
+        : line.unit || defaultUnit;
   const rate =
-    (calculationBasis === 'item-usage' || (calculationBasis === 'per-kg-input' && line.category !== 'labor')) && referencedPurchaseItem
-      ? getPurchaseItemUnitCost(referencedPurchaseItem, units)
+    supportsReference && referencedPurchaseItem
+      ? getPurchaseItemRateForUnit(referencedPurchaseItem, resolvedUnit as MeasurementUnit | undefined, units)
       : Number(line.rate) || 0;
   const chargeQuantity =
-    calculationBasis === 'fixed'
+    calculationBasis === 'fixed' || calculationBasis === 'per-event'
       ? 1
-      : calculationBasis === 'item-usage'
-        ? quantity || 1
-        : calculationBasis === 'per-kg-output'
-          ? Math.max(effectiveYieldQuantity || 0, 0)
-          : calculationBasis === 'per-kg-input'
-            ? line.category === 'labor'
-              ? Math.max(getRecipeInputQuantityInKg(ingredients, units), 0)
-              : Math.max(getReferencedIngredientQuantity(line, ingredients, purchaseItems), 0)
-            : quantity || 1;
+      : !isProductionCostMethodQuantityEditable(selectedMethod, calculationBasis)
+        ? 1
+        : quantity || 1;
 
   return {
     ...line,
     calculationBasis: calculationBasis as RecipeCostLine['calculationBasis'],
+    calculationMethodId: selectedMethod?.id || line.calculationMethodId,
     rate,
     quantity,
-    unit:
-      calculationBasis === 'fixed'
-        ? undefined
-        : calculationBasis === 'item-usage'
-          ? referencedUsageUnit || line.unit
-          : calculationBasis === 'per-kg-input'
-            ? line.category === 'labor'
-              ? 'kg'
-              : referencedIngredientUnit || referencedPurchaseItem?.baseUnitId || referencedPurchaseItem?.issueUnit || line.unit
-            : line.unit,
-    ingredientReferenceId: resolveRecipeCostReferenceId(line.ingredientReferenceId, ingredients, purchaseItems),
+    unit: resolvedUnit,
+    ingredientReferenceId: supportsReference
+      ? resolveRecipeCostReferenceId(line.ingredientReferenceId, ingredients, purchaseItems)
+      : undefined,
     totalCost: rate * chargeQuantity,
   };
 };
@@ -461,8 +443,6 @@ const salesVariantsEqual = (left: MenuItemVariant[] | undefined, right: MenuItem
 
 const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now: Date): Dish => {
   const costPerYieldUnit = recipe.costPerYieldUnit ?? recipe.costPerPortion ?? 0;
-  const productionType = resolveDishProductionType(dish);
-  const recipeSellingPricePerYieldUnit = recipe.supplySellingPricePerYieldUnit ?? recipe.suggestedSellingPrice ?? 0;
   const variants = dish.salesVariants?.length
     ? dish.salesVariants
     : [buildFallbackSalesVariant(dish, costPerYieldUnit)];
@@ -470,10 +450,6 @@ const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now:
   const recostedVariants = variants.map((variant, index) => {
     const quantity = Number(variant.quantity ?? variant.salesQuantity ?? 1) || 1;
     const salesUnit = variant.salesUnit || variant.salesUnitId || dish.unitOfSale || 'portion';
-    const nextSellingPrice =
-      productionType === 'purchased-ready' && recipeSellingPricePerYieldUnit > 0
-        ? quantity * recipeSellingPricePerYieldUnit
-        : variant.sellingPrice;
 
     return {
       ...variant,
@@ -482,7 +458,6 @@ const recostDishFromRecipe = (dish: Dish, recipe: Recipe, userName: string, now:
       quantity,
       salesQuantity: quantity,
       quantityUnit: variant.quantityUnit || salesUnit,
-      sellingPrice: nextSellingPrice,
       estimatedCost: quantity * costPerYieldUnit,
       isDefault: hasDefaultVariant ? Boolean(variant.isDefault) : index === 0,
       active: variant.status ? variant.status !== 'inactive' : variant.active !== false,
@@ -535,6 +510,26 @@ const getPackageLineCost = (dish: Dish, variantId: string | undefined, unit: str
   return (variant?.estimatedCost ?? dish.defaultVariantCost ?? dish.estimatedCost ?? 0) * quantityPerHead;
 };
 
+const getChoiceGroupCostPerHead = (choiceGroup: MenuPackageChoiceGroup) => {
+  if (choiceGroup.dishes.length === 0) {
+    return 0;
+  }
+
+  if (choiceGroup.costingMethod === 'highest-cost') {
+    return Math.max(...choiceGroup.dishes.map((dish) => dish.costPerHead || 0));
+  }
+
+  if (choiceGroup.costingMethod === 'average-cost') {
+    return (
+      choiceGroup.dishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0) /
+      Math.max(choiceGroup.dishes.length, 1)
+    );
+  }
+
+  const defaultDish = choiceGroup.dishes.find((dish) => dish.dishId === choiceGroup.defaultDishId);
+  return defaultDish?.costPerHead || choiceGroup.dishes[0]?.costPerHead || 0;
+};
+
 const recostMenuPackage = (menuPackage: MenuPackage, dishesById: Map<string, Dish>, now: Date) => {
   let packageChanged = false;
   const recostedDishes = menuPackage.dishes.map((packageDish) => {
@@ -568,6 +563,50 @@ const recostMenuPackage = (menuPackage: MenuPackage, dishesById: Map<string, Dis
 
     return unchanged ? packageDish : nextDish;
   });
+  const recostedChoiceGroups = (menuPackage.choiceGroups || []).map((choiceGroup) => {
+    let groupChanged = false;
+    const recostedGroupDishes = choiceGroup.dishes.map((packageDish) => {
+      const updatedDish = dishesById.get(packageDish.dishId);
+      if (!updatedDish) {
+        return packageDish;
+      }
+
+      const nextDish = {
+        ...packageDish,
+        dishName: updatedDish.dishName,
+        preparationArea: updatedDish.preparationArea,
+        sourceType: updatedDish.sourceType,
+        costPerHead: getPackageLineCost(
+          updatedDish,
+          packageDish.variantId,
+          packageDish.unit,
+          packageDish.quantityPerHead || 1,
+        ),
+      };
+
+      const unchanged =
+        packageDish.dishName === nextDish.dishName &&
+        packageDish.preparationArea === nextDish.preparationArea &&
+        packageDish.sourceType === nextDish.sourceType &&
+        packageDish.costPerHead === nextDish.costPerHead;
+
+      if (!unchanged) {
+        groupChanged = true;
+      }
+
+      return unchanged ? packageDish : nextDish;
+    });
+
+    if (!groupChanged) {
+      return choiceGroup;
+    }
+
+    packageChanged = true;
+    return {
+      ...choiceGroup,
+      dishes: recostedGroupDishes,
+    };
+  });
 
   if (!packageChanged) {
     return menuPackage;
@@ -576,7 +615,10 @@ const recostMenuPackage = (menuPackage: MenuPackage, dishesById: Map<string, Dis
   return {
     ...menuPackage,
     dishes: recostedDishes,
-    totalCostPerHead: recostedDishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0),
+    choiceGroups: recostedChoiceGroups,
+    totalCostPerHead:
+      recostedDishes.reduce((sum, dish) => sum + (dish.costPerHead || 0), 0) +
+      recostedChoiceGroups.reduce((sum, choiceGroup) => sum + getChoiceGroupCostPerHead(choiceGroup), 0),
     updatedAt: now,
   };
 };
@@ -585,6 +627,7 @@ const recalculateRecipe = (
   recipe: Recipe,
   purchaseItems: PurchaseItem[],
   units: UnitMaster[],
+  methods: ProductionCostMethod[],
   now: Date,
 ): Recipe => {
   if (!recipe.ingredients?.length) {
@@ -602,10 +645,11 @@ const recalculateRecipe = (
   const syncedAdditionalCostLines = (recipe.additionalCostLines || []).map((line) =>
     syncStoredRecipeCostLine(
       line,
-      getRecipeEffectiveYieldQuantity(recipe),
       syncedIngredients,
+      recipe.yieldUnitId || recipe.yieldUnit,
       purchaseItems,
       units,
+      methods,
     ),
   );
   const additionalCostLinesChanged =
@@ -615,6 +659,7 @@ const recalculateRecipe = (
       return (
         !currentLine ||
         currentLine.calculationBasis !== line.calculationBasis ||
+        currentLine.calculationMethodId !== line.calculationMethodId ||
         currentLine.rate !== line.rate ||
         currentLine.quantity !== line.quantity ||
         currentLine.unit !== line.unit ||
@@ -708,6 +753,7 @@ export const syncBanquetRecipePricingFromPurchaseItems = ({
   recipes,
   purchaseItems,
   units,
+  productionCostMethods,
   dishes,
   menuPackages,
   userName,
@@ -716,6 +762,7 @@ export const syncBanquetRecipePricingFromPurchaseItems = ({
   recipes: Recipe[];
   purchaseItems: PurchaseItem[];
   units: UnitMaster[];
+  productionCostMethods: ProductionCostMethod[];
   dishes: Dish[];
   menuPackages: MenuPackage[];
   userName: string;
@@ -723,7 +770,7 @@ export const syncBanquetRecipePricingFromPurchaseItems = ({
 }) => {
   let recipesChanged = false;
   const nextRecipes = recipes.map((recipe) => {
-    const nextRecipe = recalculateRecipe(recipe, purchaseItems, units, now);
+    const nextRecipe = recalculateRecipe(recipe, purchaseItems, units, productionCostMethods, now);
     if (nextRecipe !== recipe) {
       recipesChanged = true;
     }

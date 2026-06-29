@@ -108,13 +108,42 @@ export function UnifiedBookingDialog({
   // Customer details
   const [customerName, setCustomerName] = useState('');
   const [contactNumber, setContactNumber] = useState('');
+  const [masterDataRevision, setMasterDataRevision] = useState(0);
   
   // Event details
   const [guestCount, setGuestCount] = useState<number>(100);
   const [eventType, setEventType] = useState('');
+
+  useEffect(() => {
+    const bumpMasterDataRevision = () => {
+      setMasterDataRevision((current) => current + 1);
+    };
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key === 'venueops_master_event_types') {
+        bumpMasterDataRevision();
+      }
+    };
+
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key === 'venueops_master_event_types') {
+        bumpMasterDataRevision();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
+  }, []);
+
   const activeEventTypes = useMemo(
     () => loadSetupEventTypes().filter((eventTypeConfig) => eventTypeConfig.isActive),
-    []
+    [masterDataRevision]
   );
   const eventTypeOptions = useMemo(() => {
     const options = activeEventTypes.map((eventTypeConfig) => ({

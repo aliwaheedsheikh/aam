@@ -176,6 +176,20 @@ const normalizeAdditionalChargeType = (chargeType: Partial<AdditionalChargeType>
   };
 };
 
+const serializeAdditionalChargeTypes = (chargeTypes: AdditionalChargeType[]) =>
+  JSON.stringify(
+    chargeTypes.map((chargeType) => ({
+      id: chargeType.id,
+      name: chargeType.name,
+      defaultRate: safeNumber(chargeType.defaultRate),
+      unitType: chargeType.unitType,
+      defaultDescription: chargeType.defaultDescription,
+      isActive: chargeType.isActive !== false,
+      createdAt: chargeType.createdAt,
+      updatedAt: chargeType.updatedAt,
+    })),
+  );
+
 const getAdditionalChargeTypeName = (
   charge: ReservationAdditionalCharge,
   chargeTypes: AdditionalChargeType[],
@@ -1457,24 +1471,33 @@ export function ConfirmedReservationForm({
     () => new Map(purchaseItems.map((item) => [item.id, item])),
     [purchaseItems],
   );
-  const [rcsMasterRevision, setRcsMasterRevision] = useState(0);
+  const [masterDataRevision, setMasterDataRevision] = useState(0);
 
   useEffect(() => {
     const handleMasterDataUpdated = (event: Event) => {
       const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key.startsWith('venueops_master_')) {
+        setMasterDataRevision((revision) => revision + 1);
+      }
+    };
 
-      if (key === 'all' || key.includes('rcs')) {
-        setRcsMasterRevision((revision) => revision + 1);
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key.startsWith('venueops_master_')) {
+        setMasterDataRevision((revision) => revision + 1);
       }
     };
 
     window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
-    return () => window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
   }, []);
 
   // Load RCS Services from dedicated RCS setup master data.
-  const masterRCSCategories = useMemo(() => loadSetupRcsCategories(), [rcsMasterRevision]);
-  const masterRCSServices = useMemo(() => loadSetupRcsServices(), [rcsMasterRevision]);
+  const masterRCSCategories = useMemo(() => loadSetupRcsCategories(), [masterDataRevision]);
+  const masterRCSServices = useMemo(() => loadSetupRcsServices(), [masterDataRevision]);
   const masterRCSCategoryMap = useMemo(
     () => new Map(masterRCSCategories.map((category) => [category.id, category])),
     [masterRCSCategories],
@@ -1483,12 +1506,12 @@ export function ConfirmedReservationForm({
     () => new Map(masterRCSServices.map((service: any) => [service.id, service])),
     [masterRCSServices],
   );
-  const masterRCSVendors = useMemo(() => loadSetupRcsVendors(), [rcsMasterRevision]);
+  const masterRCSVendors = useMemo(() => loadSetupRcsVendors(), [masterDataRevision]);
   const masterRCSVendorMap = useMemo(
     () => new Map(masterRCSVendors.map((vendor) => [vendor.id, vendor])),
     [masterRCSVendors],
   );
-  const masterRCSVendorRates = useMemo(() => loadSetupRcsVendorRates(), [rcsMasterRevision]);
+  const masterRCSVendorRates = useMemo(() => loadSetupRcsVendorRates(), [masterDataRevision]);
   const preferredRCSVendorRateByServiceId = useMemo(() => {
     const byServiceId = new Map<string, ReturnType<typeof loadSetupRcsVendorRates>[number]>();
 
@@ -1503,7 +1526,7 @@ export function ConfirmedReservationForm({
 
     return byServiceId;
   }, [masterRCSVendorRates]);
-  const masterRCSCommissionRules = useMemo(() => loadSetupRcsCommissionRules(), [rcsMasterRevision]);
+  const masterRCSCommissionRules = useMemo(() => loadSetupRcsCommissionRules(), [masterDataRevision]);
   const masterRCSCommissionRuleMap = useMemo(
     () => new Map(masterRCSCommissionRules.map((rule) => [rule.id, rule])),
     [masterRCSCommissionRules],
@@ -1544,9 +1567,24 @@ export function ConfirmedReservationForm({
     const categoryIds = new Set(outsourcedRCSServices.map((service: any) => service.categoryId).filter(Boolean));
     return activeRCSCategoryOptions.filter((category) => categoryIds.has(category.id));
   }, [activeRCSCategoryOptions, outsourcedRCSServices]);
+  useEffect(() => {
+    if (showChargeTypeManager || editingChargeTypeId) {
+      return;
+    }
+
+    const nextChargeTypes = eventConfigDataStore
+      .getAdditionalChargeTypes(defaultAdditionalChargeTypes)
+      .map((chargeType: Partial<AdditionalChargeType>, index: number) => normalizeAdditionalChargeType(chargeType, index));
+    const nextSignature = serializeAdditionalChargeTypes(nextChargeTypes);
+
+    setAdditionalChargeTypes((current) => (
+      serializeAdditionalChargeTypes(current) === nextSignature ? current : nextChargeTypes
+    ));
+  }, [editingChargeTypeId, masterDataRevision, showChargeTypeManager]);
+
   const activeSetupEventTypes = useMemo(
     () => loadSetupEventTypes().filter((eventTypeConfig) => eventTypeConfig.isActive),
-    []
+    [masterDataRevision]
   );
   const eventTypeOptions = useMemo(() => {
     const options = activeSetupEventTypes.map((eventTypeConfig) => eventTypeConfig.displayName);
@@ -1555,7 +1593,7 @@ export function ConfirmedReservationForm({
     }
     return options;
   }, [activeSetupEventTypes, eventType]);
-  const setupAdvancePolicy = useMemo(() => loadSetupAdvancePolicy(), []);
+  const setupAdvancePolicy = useMemo(() => loadSetupAdvancePolicy(), [masterDataRevision]);
 
   type RCSServiceEntry = {
     id: string;
@@ -1713,7 +1751,10 @@ export function ConfirmedReservationForm({
   }, [buildRcsEntryFromMasterService, masterRCSServiceMap]);
 
   // Load Support Catering Items from Reservation Setup (for Venue Only bookings)
-  const masterSupportCateringItems = eventConfigDataStore.getServices(defaultSupportCateringItems);
+  const masterSupportCateringItems = useMemo(
+    () => eventConfigDataStore.getServices(defaultSupportCateringItems),
+    [masterDataRevision],
+  );
   const activeSupportCateringItems = masterSupportCateringItems.filter((item: any) => item.isActive);
 
   // Selected Support Catering Services (items added to venue-only booking)
@@ -3194,7 +3235,7 @@ export function ConfirmedReservationForm({
 
   const selectedSetupVenue = useMemo(
     () => loadLiveVenueInventory().venues.find((venue) => venue.id === selectedVenueId),
-    [selectedVenueId]
+    [masterDataRevision, selectedVenueId]
   );
   const minimumAdvanceResolution = useMemo<AdvanceResolution>(() => {
     if (!selectedVenueId || !selectedPrimeSpaceId) {

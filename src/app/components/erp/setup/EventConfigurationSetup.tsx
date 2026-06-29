@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   PartyPopper,
   Clock,
@@ -57,6 +57,12 @@ interface MenuPackage {
 }
 
 export function EventConfigurationSetup() {
+  const skipNextStoreWriteRef = useRef({
+    eventTypes: true,
+    timeSlots: true,
+    services: true,
+    packages: true,
+  });
   const [activeTab, setActiveTab] = useState<'event-types' | 'time-slots' | 'services' | 'packages'>('event-types');
 
   // Event Types - Initial data
@@ -143,8 +149,7 @@ export function EventConfigurationSetup() {
     isActive: true,
   });
 
-  // Load data from localStorage on mount
-  useEffect(() => {
+  const loadConfigStateFromStore = useCallback(() => {
     const defaultEventTypes = [
       { id: '1', name: 'wedding', displayName: 'Wedding', category: 'wedding' as const, requiresCouple: true, defaultDuration: 6, color: '#e11d48', isActive: true },
       { id: '2', name: 'walima', displayName: 'Walima', category: 'wedding' as const, requiresCouple: true, defaultDuration: 5, color: '#db2777', isActive: true },
@@ -180,32 +185,106 @@ export function EventConfigurationSetup() {
       { id: '4', name: 'Corporate Package', pricePerPerson: 2200, description: 'Continental & Pakistani mix', isActive: true },
     ];
 
+    skipNextStoreWriteRef.current = {
+      eventTypes: true,
+      timeSlots: true,
+      services: true,
+      packages: true,
+    };
     setEventTypes(eventConfigDataStore.getEventTypes(defaultEventTypes));
     setTimeSlots(eventConfigDataStore.getTimeSlots(defaultTimeSlots));
     setServices(eventConfigDataStore.getServices(defaultServices));
     setPackages(eventConfigDataStore.getPackages(defaultPackages));
   }, []);
 
+  // Load data from localStorage on mount and when master data is refreshed remotely
+  useEffect(() => {
+    loadConfigStateFromStore();
+
+    const handleMasterDataChange = (event?: Event) => {
+      const detailKey = String((event as CustomEvent<{ key?: string }> | undefined)?.detail?.key || '');
+      const shouldRefresh =
+        !detailKey ||
+        detailKey === 'all' ||
+        detailKey === 'venueops_master_event_types' ||
+        detailKey === 'venueops_master_time_slots' ||
+        detailKey === 'venueops_master_services' ||
+        detailKey === 'venueops_master_packages';
+
+      if (!shouldRefresh || editingId || showAddForm) {
+        return;
+      }
+
+      loadConfigStateFromStore();
+    };
+
+    const handleStorageChange = (event: StorageEvent) => {
+      if (
+        event.key &&
+        event.key !== 'venueops_master_event_types' &&
+        event.key !== 'venueops_master_time_slots' &&
+        event.key !== 'venueops_master_services' &&
+        event.key !== 'venueops_master_packages'
+      ) {
+        return;
+      }
+
+      if (editingId || showAddForm) {
+        return;
+      }
+
+      loadConfigStateFromStore();
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataChange);
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, [editingId, loadConfigStateFromStore, showAddForm]);
+
   // Save data to localStorage whenever it changes
   useEffect(() => {
+    if (skipNextStoreWriteRef.current.eventTypes) {
+      skipNextStoreWriteRef.current.eventTypes = false;
+      return;
+    }
+
     if (eventTypes.length > 0) {
       eventConfigDataStore.saveEventTypes(eventTypes);
     }
   }, [eventTypes]);
 
   useEffect(() => {
+    if (skipNextStoreWriteRef.current.timeSlots) {
+      skipNextStoreWriteRef.current.timeSlots = false;
+      return;
+    }
+
     if (timeSlots.length > 0) {
       eventConfigDataStore.saveTimeSlots(timeSlots);
     }
   }, [timeSlots]);
 
   useEffect(() => {
+    if (skipNextStoreWriteRef.current.services) {
+      skipNextStoreWriteRef.current.services = false;
+      return;
+    }
+
     if (services.length > 0) {
       eventConfigDataStore.saveServices(services);
     }
   }, [services]);
 
   useEffect(() => {
+    if (skipNextStoreWriteRef.current.packages) {
+      skipNextStoreWriteRef.current.packages = false;
+      return;
+    }
+
     if (packages.length > 0) {
       eventConfigDataStore.savePackages(packages);
     }

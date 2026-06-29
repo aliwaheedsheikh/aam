@@ -4,7 +4,7 @@ import { BanquetIngredientRequirement } from './BanquetIngredientRequirement';
 import { BanquetProductionPlanning } from './BanquetProductionPlanning';
 import { CentralKitchenPlanning } from './CentralKitchenPlanning';
 import { Booking } from '../../calendar/types-v2';
-import { Dish, KitchenIssueSheet, MenuPackage, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
+import { Dish, KitchenIssueSheet, MenuPackage, ProductionCostMethod, PurchaseItem, Recipe, StoreMaster, StoreStock, UnitMaster } from '../types';
 
 type BanquetKitchenTab =
   | 'director-planning'
@@ -19,6 +19,7 @@ interface BanquetKitchenDashboardProps {
   stores: StoreMaster[];
   recipes: Recipe[];
   menuPackages: MenuPackage[];
+  productionCostMethods: ProductionCostMethod[];
   purchaseItems: PurchaseItem[];
   storeStocks: StoreStock[];
   units: UnitMaster[];
@@ -35,6 +36,7 @@ export function BanquetKitchenDashboard({
   stores,
   recipes,
   menuPackages,
+  productionCostMethods,
   purchaseItems,
   storeStocks,
   units,
@@ -128,6 +130,7 @@ export function BanquetKitchenDashboard({
             stores={stores}
             recipes={recipes}
             menuPackages={menuPackages}
+            productionCostMethods={productionCostMethods}
             purchaseItems={purchaseItems}
             storeStocks={storeStocks}
             units={units}
@@ -142,6 +145,7 @@ export function BanquetKitchenDashboard({
             stores={stores}
             recipes={recipes}
             menuPackages={menuPackages}
+            productionCostMethods={productionCostMethods}
             purchaseItems={purchaseItems}
             storeStocks={storeStocks}
             units={units}
@@ -157,6 +161,7 @@ export function BanquetKitchenDashboard({
             stores={stores}
             recipes={recipes}
             menuPackages={menuPackages}
+            productionCostMethods={productionCostMethods}
             purchaseItems={purchaseItems}
             storeStocks={storeStocks}
             units={units}

@@ -19,6 +19,7 @@ import {
   GoodsReceipt,
   KitchenIssueSheet,
   MenuPackage,
+  ProductionCostMethod,
   ProcurementLookupState,
   PurchaseItem,
   PurchaseOrder,
@@ -51,6 +52,7 @@ interface ProcurementManagementProps {
   dishes?: Dish[];
   recipes?: Recipe[];
   menuPackages?: MenuPackage[];
+  productionCostMethods?: ProductionCostMethod[];
   kitchenIssueSheets?: KitchenIssueSheet[];
   onVendorsChange: (vendors: Vendor[]) => void;
   onProcurementLookupsChange: (lookups: ProcurementLookupState) => void;
@@ -260,6 +262,7 @@ export function ProcurementManagement({
   dishes = [],
   recipes = [],
   menuPackages = [],
+  productionCostMethods = [],
   kitchenIssueSheets = [],
   onVendorsChange,
   onProcurementLookupsChange,
@@ -764,6 +767,7 @@ export function ProcurementManagement({
             dishes={dishes}
             recipes={recipes}
             menuPackages={menuPackages}
+            productionCostMethods={productionCostMethods}
             kitchenIssueSheets={kitchenIssueSheets}
             units={units}
             onVendorsChange={onVendorsChange}

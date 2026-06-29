@@ -72,6 +72,44 @@ export function EventTypeSetup({ userName }: EventTypeSetupProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [editedEventType, setEditedEventType] = useState<SetupEventType | null>(null);
 
+  useEffect(() => {
+    const reloadEventTypes = () => {
+      if (isEditing || isCreating) {
+        return;
+      }
+
+      const nextEventTypes = loadSetupEventTypes();
+      const resolvedEventTypes = nextEventTypes.length > 0 ? nextEventTypes : defaultSetupEventTypes;
+      setEventTypes(resolvedEventTypes);
+      setSelectedEventType((current) =>
+        current && resolvedEventTypes.some((eventType) => eventType.id === current.id)
+          ? resolvedEventTypes.find((eventType) => eventType.id === current.id) ?? resolvedEventTypes[0] ?? null
+          : resolvedEventTypes[0] ?? null,
+      );
+    };
+
+    const handleMasterDataUpdated = (event: Event) => {
+      const key = String((event as CustomEvent<{ key?: string }>).detail?.key || '');
+      if (!key || key === 'all' || key === 'venueops_master_event_types') {
+        reloadEventTypes();
+      }
+    };
+
+    const handleStorageUpdated = (event: StorageEvent) => {
+      if (!event.key || event.key === 'venueops_master_event_types') {
+        reloadEventTypes();
+      }
+    };
+
+    window.addEventListener('masterDataUpdated', handleMasterDataUpdated);
+    window.addEventListener('storage', handleStorageUpdated);
+
+    return () => {
+      window.removeEventListener('masterDataUpdated', handleMasterDataUpdated);
+      window.removeEventListener('storage', handleStorageUpdated);
+    };
+  }, [isCreating, isEditing]);
+
   const filteredEventTypes = useMemo(() => {
     const normalizedSearch = searchQuery.trim().toLowerCase();
 

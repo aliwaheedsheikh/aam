@@ -2,10 +2,26 @@ $ErrorActionPreference = "Stop"
 
 $workspaceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backendPath = Join-Path $workspaceRoot "backend"
-$dockerExe = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
-$dockerDesktopExe = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-$nodeExe = "C:\Program Files\nodejs\node.exe"
-$nodeNpm = "C:\Program Files\nodejs\npm.cmd"
+# L-5: Resolve tools from PATH instead of hardcoded C:\Program Files\... paths.
+# This works regardless of install method (winget, choco, nvm, custom location).
+try {
+  $dockerExe = (Get-Command docker -ErrorAction Stop).Source
+} catch {
+  Write-Error "Docker not found on PATH. Install Docker Desktop and ensure 'docker' is accessible."
+  exit 1
+}
+try {
+  $nodeExe = (Get-Command node -ErrorAction Stop).Source
+} catch {
+  Write-Error "Node.js not found on PATH. Install Node.js and ensure 'node' is accessible."
+  exit 1
+}
+try {
+  $nodeNpm = (Get-Command npm -ErrorAction Stop).Source
+} catch {
+  Write-Error "npm not found on PATH. Install Node.js and ensure 'npm' is accessible."
+  exit 1
+}
 $shareServerPath = Join-Path $workspaceRoot "scripts\venueops-share-server.mjs"
 $frontendPort = 4173
 $backendPort = 3001
@@ -28,12 +44,8 @@ function Test-Url {
 }
 
 function Start-DockerIfNeeded {
-  if (-not (Test-Path $dockerExe)) {
-    throw "Docker CLI not found at '$dockerExe'."
-  }
-
   try {
-    & $dockerExe info | Out-Null
+    & $dockerExe info 2>&1 | Out-Null
     Write-Host "Docker is already running." -ForegroundColor Green
     return
   }

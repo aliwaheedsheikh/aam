@@ -9,6 +9,7 @@ import {
   Package,
   Plus,
   Search,
+  Trash2,
   Truck,
   X,
 } from 'lucide-react';
@@ -1107,7 +1108,7 @@ export function PurchaseOrders({
 
   const openEditDraftDialog = (purchaseOrder: PurchaseOrder) => {
     if (purchaseOrder.status === 'cancelled') {
-      toast.error('Cancelled purchase orders cannot be amended');
+      toast.error('Cancelled purchase orders cannot be amended. Delete them from the register if they are no longer needed.');
       return;
     }
 
@@ -1864,6 +1865,21 @@ export function PurchaseOrders({
     toast.success(`${purchaseOrder.poNumber} cancelled`);
   };
 
+  const handleDeleteCancelledPO = (purchaseOrder: PurchaseOrder) => {
+    if (purchaseOrder.status !== 'cancelled') {
+      toast.error('Only cancelled purchase orders can be deleted');
+      return;
+    }
+
+    onPurchaseOrdersChange(
+      purchaseOrders.filter((entry) => entry.id !== purchaseOrder.id),
+    );
+    if (viewingPO?.id === purchaseOrder.id || editingDraftPO?.id === purchaseOrder.id) {
+      closeDialog();
+    }
+    toast.success(`${purchaseOrder.poNumber} deleted`);
+  };
+
   const includedPlanningRows = useMemo(() => planningRows.filter((row) => row.include), [planningRows]);
 
   const unassignedPlanningRows = useMemo(
@@ -2243,6 +2259,15 @@ export function PurchaseOrders({
                                   className="inline-flex h-7 items-center rounded border border-red-200 px-2 text-xs font-medium text-red-700 hover:bg-red-50"
                                 >
                                   Cancel
+                                </button>
+                              ) : null}
+                              {purchaseOrder.status === 'cancelled' ? (
+                                <button
+                                  onClick={() => handleDeleteCancelledPO(purchaseOrder)}
+                                  className="inline-flex h-7 items-center gap-1 rounded border border-red-300 px-2 text-xs font-medium text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="size-3.5" />
+                                  Delete
                                 </button>
                               ) : null}
                               <button
@@ -3601,6 +3626,15 @@ export function PurchaseOrders({
                   className="rounded border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
                 >
                   Cancel PO
+                </button>
+              ) : null}
+              {viewingPO.status === 'cancelled' ? (
+                <button
+                  onClick={() => handleDeleteCancelledPO(viewingPO)}
+                  className="inline-flex items-center gap-2 rounded border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                >
+                  <Trash2 className="size-4" />
+                  Delete PO
                 </button>
               ) : null}
               {(viewingPO.status === 'approved' || viewingPO.status === 'partially-received') ? (

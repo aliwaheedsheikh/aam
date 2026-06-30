@@ -1,29 +1,42 @@
-import { AuthSession } from "./authTypes";
+/**
+ * S-1: Auth storage hardened — the JWT access token is NO LONGER stored in localStorage.
+ *
+ * The token now lives in an HttpOnly cookie set by the backend login endpoint.
+ * HttpOnly cookies are invisible to JavaScript and cannot be exfiltrated by XSS.
+ *
+ * Only the non-sensitive user profile object (no credentials, no token) is kept
+ * in localStorage so the UI can render the user's name/role across page refreshes.
+ */
+import { AuthUser } from "./authTypes";
 
-const AUTH_STORAGE_KEY = "venueops-auth-session";
+const USER_STORAGE_KEY = "venueops-auth-user";
 
 export const authStorage = {
-  load(): AuthSession | null {
-    const rawSession = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (!rawSession) {
-      return null;
-    }
-
+  loadUser(): AuthUser | null {
+    const raw = window.localStorage.getItem(USER_STORAGE_KEY);
+    if (!raw) return null;
     try {
-      return JSON.parse(rawSession) as AuthSession;
+      return JSON.parse(raw) as AuthUser;
     } catch {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      window.localStorage.removeItem(USER_STORAGE_KEY);
       return null;
     }
   },
 
-  save(session: AuthSession) {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  saveUser(user: AuthUser) {
+    window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
   },
 
   clear() {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    window.localStorage.removeItem(USER_STORAGE_KEY);
   },
 };
 
-export const getAuthToken = () => authStorage.load()?.accessToken ?? "";
+/**
+ * S-1: Token is now managed by the browser via HttpOnly cookie — do not read it in JS.
+ * This function is kept as a no-op stub so callers that previously attached
+ * `Authorization: Bearer <token>` headers will gracefully send an empty string.
+ * Those callers will continue to work because the browser will also send the cookie
+ * automatically on every request to the same origin.
+ */
+export const getAuthToken = (): string => "";

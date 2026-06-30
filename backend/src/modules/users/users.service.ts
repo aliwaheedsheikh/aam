@@ -7,6 +7,7 @@ import {
   USER_MANAGEMENT_DEFAULT_PERMISSIONS,
   USER_PERMISSION_MODULES,
 } from "../auth/auth.constants";
+import { toAuthenticatedUser } from "../auth/auth.types";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PrismaService } from "src/prisma/prisma.service";
@@ -188,6 +189,8 @@ export class UsersService {
     return `${username}@venueops.local`;
   }
 
+  // A-7: Delegate permission mapping to the shared toAuthenticatedUser() function
+  // instead of duplicating the identical mapping logic here for the third time.
   private toResponse(user: {
     id: string;
     email: string;
@@ -207,22 +210,8 @@ export class UsersService {
     }>;
   }) {
     return {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      fullName: user.fullName,
-      role: user.role,
+      ...toAuthenticatedUser(user),
       isActive: user.isActive,
-      permissions: user.permissions.map((permission) => ({
-        moduleKey: permission.moduleKey,
-        canView: permission.canView,
-        canCreate: permission.canCreate,
-        canEdit: permission.canEdit,
-        canDelete: permission.canDelete,
-        canApprove: permission.canApprove,
-        canExport: permission.canExport,
-        canManage: permission.canManage,
-      })),
     };
   }
 }

@@ -13,12 +13,14 @@ import {
   StoreLocation,
   StoreMaster as StoreMasterType,
   StoreStock,
+  UnitMaster,
   Vendor,
 } from '../kitchen/types';
 import { formatCurrencyPKR, formatDatePK, formatNumberPK } from '../../lib/locale';
 import { StockTransferDialog } from '../procurement/StockTransferDialog';
 import { StoreMaster as StoreMasterScreen } from './StoreMaster';
 import { buildStoreOptions, getStoreDisplayName } from '../../lib/storeMaster';
+import { UnitMasterSetup } from '../kitchen/shared/UnitMasterSetup';
 
 interface InventoryManagementProps {
   userName: string;
@@ -30,9 +32,12 @@ interface InventoryManagementProps {
   purchaseOrders: PurchaseOrder[];
   vendors: Vendor[];
   goodsReceipts: GoodsReceipt[];
+  units: UnitMaster[];
   onStoreStocksChange: (stocks: StoreStock[]) => void;
   onStockTransfersChange: (transfers: StockTransfer[]) => void;
   onStoresChange: (stores: StoreMasterType[]) => void;
+  onUnitsChange: (units: UnitMaster[]) => void;
+  onNavigate?: (route: string) => void;
   onBack: () => void;
 }
 
@@ -42,16 +47,16 @@ type InventoryTab =
   | 'stock-movement'
   | 'purchase-tracking'
   | 'store-master'
-  | 'vendor-performance';
+  | 'vendor-performance'
+  | 'unit-setup';
 type DateRangeFilter = 'all' | '7d' | '30d' | '90d';
 
-const tabs: Array<{ id: InventoryTab; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'stock-levels', label: 'Stock Levels' },
-  { id: 'stock-movement', label: 'Movements' },
-  { id: 'purchase-tracking', label: 'Purchase' },
-  { id: 'store-master', label: 'Stores' },
-  { id: 'vendor-performance', label: 'Vendors' },
+const tabs: Array<{ id: InventoryTab; label: string; route: string }> = [
+  { id: 'overview', label: 'Overview', route: 'inventory-stock' },
+  { id: 'stock-levels', label: 'Current Stock', route: 'inventory-stock-levels' },
+  { id: 'stock-movement', label: 'Stock Movements', route: 'inventory-stock-movement' },
+  { id: 'store-master', label: 'Stores', route: 'inventory-stores' },
+  { id: 'unit-setup', label: 'Unit Setup', route: 'inventory-unit-setup' },
 ];
 
 const dateRangeOptions: Array<{ value: DateRangeFilter; label: string }> = [
@@ -95,8 +100,10 @@ const isWithinDateRange = (value: Date, range: DateRangeFilter) => {
   return compareDate >= threshold;
 };
 
-const compactCurrency = (value: number) =>
-  formatCurrencyPKR(value, { compact: true, minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const compactCurrency = (value: number) => formatCurrencyPKR(value);
+
+const getPurchaseDisplayUnit = (item?: PurchaseItem, fallbackUnit?: string) =>
+  item?.purchaseUnitId || item?.purchaseUnit || item?.baseUnitId || item?.issueUnit || fallbackUnit || 'unit';
 
 const getStockStatusMeta = (current: number, reorder: number) => {
   if (current <= 0) {
@@ -386,16 +393,19 @@ const EmptyTableRow = ({ colSpan, message }: { colSpan: number; message: string 
 export function InventoryManagement({
   userName,
   initialTab = 'overview',
-  stores,
-  purchaseItems,
-  storeStocks,
-  stockTransfers,
-  purchaseOrders,
-  vendors,
-  goodsReceipts,
+  stores = [],
+  purchaseItems = [],
+  storeStocks = [],
+  stockTransfers = [],
+  purchaseOrders = [],
+  vendors = [],
+  goodsReceipts = [],
+  units = [],
   onStoreStocksChange,
   onStockTransfersChange,
   onStoresChange,
+  onUnitsChange,
+  onNavigate,
   onBack,
 }: InventoryManagementProps) {
   const [activeTab, setActiveTab] = useState<InventoryTab>(initialTab);
@@ -408,6 +418,20 @@ export function InventoryManagement({
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  const handleTabChange = (tabId: InventoryTab) => {
+    setActiveTab(tabId);
+    const matchingTab = tabs.find((tab) => tab.id === tabId);
+    if (matchingTab) {
+      onNavigate?.(matchingTab.route);
+    }
+  };
+
+  const openPurchaseWorkspace = () => {
+    onNavigate?.('procurement-management');
+  };
+
+  const currentTabLabel = tabs.find((tab) => tab.id === activeTab)?.label || 'Overview';
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const storeOptions = useMemo(() => buildStoreOptions(stores), [stores]);
@@ -460,6 +484,7 @@ export function InventoryManagement({
         return {
           ...stock,
           itemCode: item?.itemCode || '--',
+          unit: getPurchaseDisplayUnit(item, stock.unit),
           storeName: storeMeta?.name || getStoreDisplayName(stores, stock.storeLocation),
           stockValue,
           status,
@@ -844,7 +869,10 @@ export function InventoryManagement({
           >
             <ArrowLeft className="size-4" />
           </button>
-          <h1 className="mr-2 text-base font-semibold text-slate-900">Inventory</h1>
+          <div className="mr-2 min-w-[160px]">
+            <h1 className="text-base font-semibold text-slate-900">Kitchen Purchase</h1>
+            <p className="text-xs text-slate-500">Stocks &gt; {currentTabLabel}</p>
+          </div>
           <select
             value={selectedStore}
             onChange={(event) => setSelectedStore(event.target.value as StoreLocation | 'all')}
@@ -930,7 +958,7 @@ export function InventoryManagement({
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabChange(tab.id)}
               className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
                 activeTab === tab.id ? 'bg-blue-600 text-white' : 'text-slate-700 hover:bg-slate-100'
               }`}
@@ -944,7 +972,7 @@ export function InventoryManagement({
       <div className="flex-1 overflow-hidden p-4">
         {activeTab === 'overview' && (
           <div className="grid h-full grid-cols-1 gap-4 overflow-y-auto xl:grid-cols-2">
-            <CompactSection title="Store Coverage" actionLabel="Open Stores" onAction={() => setActiveTab('store-master')}>
+            <CompactSection title="Store Coverage" actionLabel="Open Stores" onAction={() => handleTabChange('store-master')}>
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className="bg-slate-50">
@@ -995,7 +1023,7 @@ export function InventoryManagement({
             <CompactSection
               title="Replenishment Watchlist"
               actionLabel="Open Stock Levels"
-              onAction={() => setActiveTab('stock-levels')}
+              onAction={() => handleTabChange('stock-levels')}
             >
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -1040,7 +1068,7 @@ export function InventoryManagement({
             <CompactSection
               title="Transfer Control Tower"
               actionLabel="Open Movements"
-              onAction={() => setActiveTab('stock-movement')}
+              onAction={() => handleTabChange('stock-movement')}
             >
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -1083,9 +1111,9 @@ export function InventoryManagement({
             </CompactSection>
 
             <CompactSection
-              title="Purchase Follow-up"
+              title="Inbound Purchase Follow-up"
               actionLabel="Open Purchase"
-              onAction={() => setActiveTab('purchase-tracking')}
+              onAction={openPurchaseWorkspace}
             >
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -1128,7 +1156,7 @@ export function InventoryManagement({
               <CompactSection
                 title="Top Value Stock"
                 actionLabel="Open Stock Levels"
-                onAction={() => setActiveTab('stock-levels')}
+                onAction={() => handleTabChange('stock-levels')}
               >
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -1545,6 +1573,15 @@ export function InventoryManagement({
             storeStocks={storeStocks}
             stockTransfers={stockTransfers}
             onStoresChange={onStoresChange}
+          />
+        )}
+
+        {activeTab === 'unit-setup' && (
+          <UnitMasterSetup
+            userName={userName}
+            units={units}
+            onUnitsChange={onUnitsChange}
+            initialUsageFilter="purchase"
           />
         )}
 

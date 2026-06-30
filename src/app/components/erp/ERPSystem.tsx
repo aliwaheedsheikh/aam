@@ -1608,11 +1608,12 @@ export function ERPSystem({
           onPurchaseOrdersChange={setPurchaseOrders}
           onPurchaseItemsChange={setPurchaseItems}
           onVendorItemMappingsChange={setVendorItemMappings}
-          onGoodsReceiptsChange={setGoodsReceipts}
-          onStoreStocksChange={setStoreStocks}
-          onVendorBillsChange={setVendorBills}
-          onBack={() => setCurrentModule('dashboard')}
-        />
+            onGoodsReceiptsChange={setGoodsReceipts}
+            onStoreStocksChange={setStoreStocks}
+            onVendorBillsChange={setVendorBills}
+            onNavigate={setCurrentModule}
+            onBack={() => setCurrentModule('dashboard')}
+          />
       );
     }
 
@@ -1620,16 +1621,16 @@ export function ERPSystem({
     if (currentModule.startsWith('inventory-')) {
       const inventoryInitialTab =
         currentModule === 'inventory-stock'
-          ? 'stock-levels'
-          : currentModule === 'inventory-purchase-orders'
-            ? 'purchase-tracking'
+          ? 'overview'
+          : currentModule === 'inventory-stock-levels'
+            ? 'stock-levels'
             : currentModule === 'inventory-stock-movement'
               ? 'stock-movement'
               : currentModule === 'inventory-stores'
                 ? 'store-master'
-              : currentModule === 'inventory-vendors'
-                ? 'vendor-performance'
-                : 'overview';
+              : currentModule === 'inventory-unit-setup'
+                ? 'unit-setup'
+              : 'overview';
 
       return (
         <InventoryManagement
@@ -1642,9 +1643,12 @@ export function ERPSystem({
           purchaseOrders={purchaseOrders}
           vendors={vendors}
           goodsReceipts={goodsReceipts}
+          units={measurementUnits}
           onStoreStocksChange={setStoreStocks}
           onStockTransfersChange={setStockTransfers}
           onStoresChange={setStores}
+          onUnitsChange={setMeasurementUnits}
+          onNavigate={setCurrentModule}
           onBack={() => setCurrentModule('dashboard')}
         />
       );

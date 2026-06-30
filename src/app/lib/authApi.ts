@@ -1,4 +1,4 @@
-import { authStorage, getAuthToken } from "./authStorage";
+import { authStorage } from "./authStorage";
 import { AuthSession, AuthUser } from "./authTypes";
 import { fetchApi } from "./apiBaseUrl";
 
@@ -22,7 +22,7 @@ const parseError = async (response: Response) => {
 };
 
 export const authApi = {
-  async login(username: string, password: string) {
+  async login(username: string, password: string): Promise<AuthSession> {
     const response = await fetchApi("/auth/login", {
       method: "POST",
       headers: {
@@ -36,34 +36,23 @@ export const authApi = {
     }
 
     const session = (await response.json()) as AuthSession;
-    authStorage.save(session);
+    // S-1: Only persist the non-sensitive user profile — the token lives in an
+    // HttpOnly cookie set by the backend and is never read by JavaScript.
+    authStorage.saveUser(session.user);
     return session;
   },
 
-  async me() {
-    const token = getAuthToken();
-    if (!token) {
-      throw new AuthApiError("No active session");
-    }
-
-    const response = await fetchApi("/auth/me", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
+  async me(): Promise<AuthUser> {
+    // S-1: No need to manually attach a Bearer token — the HttpOnly cookie is
+    // sent automatically by the browser via credentials: "include" in fetchApi.
+    const response = await fetchApi("/auth/me");
 
     if (!response.ok) {
       throw new AuthApiError(await parseError(response), response.status);
     }
 
     const user = (await response.json()) as AuthUser;
-    const current = authStorage.load();
-    if (current) {
-      authStorage.save({
-        ...current,
-        user,
-      });
-    }
+    authStorage.saveUser(user);
     return user;
   },
 };

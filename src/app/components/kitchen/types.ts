@@ -453,6 +453,7 @@ export interface Recipe {
   pricingEvaluationValue?: number;
   suggestedSellingPrice?: number;
   foodCostPercentage?: number;
+  costingEditedAt?: Date;
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;

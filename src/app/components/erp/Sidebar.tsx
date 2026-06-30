@@ -116,14 +116,8 @@ export function Sidebar({
       moduleKeys: [MODULE_KEYS.inventory, MODULE_KEYS.procurement],
       activePrefixes: ['inventory', 'procurement-management'],
       subModules: [
-        { id: 'overview', name: 'Overview', route: 'procurement-management', moduleKey: MODULE_KEYS.procurement },
-        { id: 'purchase-items', name: 'Items', route: 'procurement-management-purchase-items', moduleKey: MODULE_KEYS.procurement },
-        { id: 'purchase-orders', name: 'Orders', route: 'procurement-management-purchase-orders', moduleKey: MODULE_KEYS.procurement },
-        { id: 'grn-register', name: 'GRNs', route: 'procurement-management-grn-register', moduleKey: MODULE_KEYS.procurement },
-        { id: 'stock', name: 'Stock', route: 'inventory-stock', moduleKey: MODULE_KEYS.inventory },
-        { id: 'stock-movement', name: 'Movements', route: 'inventory-stock-movement', moduleKey: MODULE_KEYS.inventory },
-        { id: 'stores', name: 'Stores', route: 'inventory-stores', moduleKey: MODULE_KEYS.inventory },
-        { id: 'unit-setup', name: 'Unit Setup', route: 'procurement-management-unit-setup', moduleKey: MODULE_KEYS.inventory },
+        { id: 'purchase', name: 'Purchase', route: 'procurement-management', moduleKey: MODULE_KEYS.procurement },
+        { id: 'stocks', name: 'Stocks', route: 'inventory-stock', moduleKey: MODULE_KEYS.inventory },
       ],
     },
     {

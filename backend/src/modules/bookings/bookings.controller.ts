@@ -6,6 +6,7 @@ import { PermissionsGuard } from "../auth/guards/permissions.guard";
 import { BookingsService } from "./bookings.service";
 import { CreateBookingDto } from "./dto/create-booking.dto";
 import { UpdateBookingDto } from "./dto/update-booking.dto";
+import { FrontendBookingDto, SyncFrontendBookingsDto } from "./dto/frontend-booking.dto";
 
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller("bookings")
@@ -52,32 +53,42 @@ export class BookingsController {
     return this.bookingsService.update(id, updateBookingDto, clientId);
   }
 
+  /**
+   * S-4: Body now validated against SyncFrontendBookingsDto — replaces the
+   * `Record<string, unknown>` + `as never` cast that bypassed ValidationPipe.
+   */
   @RequirePermissions(MODULE_KEYS.reservations, "edit")
   @Put("frontend-sync")
   syncFrontendBookings(
-    @Body() body: { bookings: Array<Record<string, unknown>> },
+    @Body() body: SyncFrontendBookingsDto,
     @Headers("x-venueops-client-id") clientId?: string,
   ) {
-    return this.bookingsService.syncFrontendBookings((body?.bookings ?? []) as never[], clientId);
+    return this.bookingsService.syncFrontendBookings(body.bookings, clientId);
   }
 
+  /**
+   * S-4: Body now validated against FrontendBookingDto.
+   */
   @RequirePermissions(MODULE_KEYS.reservations, "create")
   @Post("frontend")
   createFrontendBooking(
-    @Body() booking: Record<string, unknown>,
+    @Body() booking: FrontendBookingDto,
     @Headers("x-venueops-client-id") clientId?: string,
   ) {
-    return this.bookingsService.createFrontendBooking(booking as never, clientId);
+    return this.bookingsService.createFrontendBooking(booking, clientId);
   }
 
+  /**
+   * S-4: Body now validated against FrontendBookingDto.
+   */
   @RequirePermissions(MODULE_KEYS.reservations, "edit")
   @Patch("frontend/:id")
   updateFrontendBooking(
     @Param("id") id: string,
-    @Body() booking: Record<string, unknown>,
+    @Body() booking: FrontendBookingDto,
     @Headers("x-venueops-client-id") clientId?: string,
   ) {
-    return this.bookingsService.updateFrontendBooking(id, booking as never, clientId);
+    return this.bookingsService.updateFrontendBooking(id, booking, clientId);
   }
 
   @RequirePermissions(MODULE_KEYS.reservations, "delete")

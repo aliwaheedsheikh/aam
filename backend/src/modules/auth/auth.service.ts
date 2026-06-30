@@ -5,7 +5,7 @@ import { User } from "@prisma/client";
 import * as bcrypt from "bcrypt";
 import { PrismaService } from "src/prisma/prisma.service";
 import { LoginDto } from "./dto/login.dto";
-import { AuthenticatedUser } from "./auth.types";
+import { AuthenticatedUser, toAuthenticatedUser } from "./auth.types";
 
 @Injectable()
 export class AuthService {
@@ -40,21 +40,26 @@ export class AuthService {
 
   async login(loginDto: LoginDto) {
     const user = await this.validateUser(loginDto.username, loginDto.password);
-    const authUser = this.toAuthenticatedUser(user);
+    // A-7: Use the shared mapper.
+    const authUser = toAuthenticatedUser(user);
+
+    // L-2: No fallback — if JWT_SECRET is missing the app would have already crashed at startup.
+    const jwtSecret = this.configService.get<string>("JWT_SECRET");
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+      },
+      {
+        secret: jwtSecret,
+        expiresIn: (this.configService.get<string>("JWT_EXPIRES_IN", "1d") ?? "1d") as never,
+      },
+    );
 
     return {
-      accessToken: await this.jwtService.signAsync(
-        {
-          sub: user.id,
-          email: user.email,
-          username: user.username,
-          role: user.role,
-        },
-        {
-          secret: this.configService.get<string>("JWT_SECRET"),
-          expiresIn: (this.configService.get<string>("JWT_EXPIRES_IN", "1d") ?? "1d") as never,
-        },
-      ),
+      accessToken,
       user: authUser,
     };
   }
@@ -71,48 +76,17 @@ export class AuthService {
       throw new UnauthorizedException("User account is inactive");
     }
 
-    return this.toAuthenticatedUser(user);
+    // A-7: Use the shared mapper.
+    return toAuthenticatedUser(user);
   }
 
   async authenticateAccessToken(token: string) {
+    // L-2: No hardcoded fallback secret. If JWT_SECRET is missing, the app already refused to start.
+    const jwtSecret = this.configService.get<string>("JWT_SECRET");
     const payload = await this.jwtService.verifyAsync<{ sub: string }>(token, {
-      secret: this.configService.get<string>("JWT_SECRET") ?? "venueops-dev-super-secret-key",
+      secret: jwtSecret,
     });
 
     return this.getAuthenticatedUser(payload.sub);
-  }
-
-  private toAuthenticatedUser(
-    user: User & {
-      username: string | null;
-      permissions: Array<{
-        moduleKey: string;
-        canView: boolean;
-        canCreate: boolean;
-        canEdit: boolean;
-        canDelete: boolean;
-        canApprove: boolean;
-        canExport: boolean;
-        canManage: boolean;
-      }>;
-    },
-  ): AuthenticatedUser {
-    return {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      fullName: user.fullName,
-      role: user.role,
-      permissions: user.permissions.map((permission) => ({
-        moduleKey: permission.moduleKey,
-        canView: permission.canView,
-        canCreate: permission.canCreate,
-        canEdit: permission.canEdit,
-        canDelete: permission.canDelete,
-        canApprove: permission.canApprove,
-        canExport: permission.canExport,
-        canManage: permission.canManage,
-      })),
-    };
   }
 }

@@ -56,6 +56,13 @@ type SubModule =
   | 'guest-pricing'
   | 'purchase-items';
 
+type MenuBuilderOpenRequest = {
+  packageId: string;
+  tab: 'menu-estimate';
+  requestKey: number;
+  viewMode?: boolean;
+};
+
 export function BanquetKitchenManagement({
   userName,
   cuisines,
@@ -95,6 +102,7 @@ export function BanquetKitchenManagement({
     const stored = window.localStorage.getItem(BANQUET_KITCHEN_SUBMODULE_STORAGE_KEY);
     return (stored as SubModule) || 'dish-master';
   });
+  const [menuBuilderOpenRequest, setMenuBuilderOpenRequest] = useState<MenuBuilderOpenRequest | null>(null);
 
   const subModules = [
     { id: 'cuisine-master' as SubModule, name: 'Cuisine Master', icon: List },
@@ -115,6 +123,16 @@ export function BanquetKitchenManagement({
 
     window.localStorage.setItem(BANQUET_KITCHEN_SUBMODULE_STORAGE_KEY, activeSubModule);
   }, [activeSubModule]);
+
+  const handleOpenMenuCommercialCosting = (packageId: string) => {
+    setMenuBuilderOpenRequest({
+      packageId,
+      tab: 'menu-estimate',
+      requestKey: Date.now(),
+      viewMode: false,
+    });
+    setActiveSubModule('menu-builder');
+  };
 
   const renderSubModule = () => {
     switch (activeSubModule) {
@@ -211,11 +229,22 @@ export function BanquetKitchenManagement({
             units={units}
             onMenuPackagesChange={onMenuPackagesChange}
             onMenuPackageTypesChange={onMenuPackageTypesChange}
+            openPackageRequest={menuBuilderOpenRequest}
+            onOpenPackageRequestHandled={(requestKey) =>
+              setMenuBuilderOpenRequest((current) =>
+                current?.requestKey === requestKey ? null : current,
+              )
+            }
           />
         );
 
       case 'guest-pricing':
-        return <GuestCountPricingEngine menuPackages={menuPackages} />;
+        return (
+          <GuestCountPricingEngine
+            menuPackages={menuPackages}
+            onOpenCommercialCosting={handleOpenMenuCommercialCosting}
+          />
+        );
 
       case 'purchase-items':
         return (

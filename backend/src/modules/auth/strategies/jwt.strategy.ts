@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PassportStrategy } from "@nestjs/passport";
+import { Request } from "express";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import { PrismaService } from "src/prisma/prisma.service";
-import { AuthenticatedUser } from "../auth.types";
+import { AuthenticatedUser, toAuthenticatedUser } from "../auth.types";
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -11,9 +12,18 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
-    const jwtSecret = configService.get<string>("JWT_SECRET") ?? "venueops-dev-super-secret-key";
+    // L-2: Fail fast if JWT_SECRET is not configured — no hardcoded fallback.
+    const jwtSecret = configService.get<string>("JWT_SECRET");
+    if (!jwtSecret) {
+      throw new Error("FATAL: JWT_SECRET environment variable is not set. Refusing to start.");
+    }
+
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // S-1: Accept token from either HttpOnly cookie (preferred) or Bearer header.
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        (req: Request) => req?.cookies?.["venueops_token"] ?? null,
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ]),
       ignoreExpiration: false,
       secretOrKey: jwtSecret,
     });
@@ -33,22 +43,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException("User account is inactive");
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      fullName: user.fullName,
-      role: user.role,
-      permissions: user.permissions.map((permission) => ({
-        moduleKey: permission.moduleKey,
-        canView: permission.canView,
-        canCreate: permission.canCreate,
-        canEdit: permission.canEdit,
-        canDelete: permission.canDelete,
-        canApprove: permission.canApprove,
-        canExport: permission.canExport,
-        canManage: permission.canManage,
-      })),
-    };
+    // A-7: Use the shared mapper instead of duplicating the mapping logic.
+    return toAuthenticatedUser(user);
   }
 }

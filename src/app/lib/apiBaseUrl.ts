@@ -121,6 +121,9 @@ export const fetchApi = async (path: string, init?: RequestInit) => {
 
       const response = await fetch(`${candidate}${apiPath}`, {
         cache: "no-store",
+        // S-1: Send the HttpOnly venueops_token cookie on every request so the
+        // backend can authenticate via cookie (not just the Authorization header).
+        credentials: "include",
         ...init,
         headers,
       });

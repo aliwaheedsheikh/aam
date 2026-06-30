@@ -218,19 +218,29 @@ export class BookingsService {
   async syncFrontendBookings(bookings: FrontendBookingPayload[], originClientId?: string) {
     const incomingExternalIds = bookings.map((booking) => booking.id);
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const booking of bookings) {
-        await this.upsertFrontendBooking(tx, booking);
-      }
-
-      await tx.booking.deleteMany({
-        where: {
-          externalId: {
-            not: null,
-            notIn: incomingExternalIds,
-          },
+    // A-2: Process in chunks of 50 to avoid a single mega-transaction that locks tables
+    // for seconds (N+1 upserts × 4 DB round-trips each = hundreds of sequential queries).
+    const CHUNK_SIZE = 50;
+    for (let i = 0; i < bookings.length; i += CHUNK_SIZE) {
+      const chunk = bookings.slice(i, i + CHUNK_SIZE);
+      await this.prisma.$transaction(
+        async (tx) => {
+          for (const booking of chunk) {
+            await this.upsertFrontendBooking(tx, booking);
+          }
         },
-      });
+        { timeout: 30_000 },
+      );
+    }
+
+    // Delete orphaned bookings once — outside any per-chunk transaction.
+    await this.prisma.booking.deleteMany({
+      where: {
+        externalId: {
+          not: null,
+          notIn: incomingExternalIds,
+        },
+      },
     });
 
     this.realtimeService.notifyResourceChanged("bookings", "bulk-sync", {
@@ -687,21 +697,14 @@ export class BookingsService {
       .join(" ");
   }
 
-  private normalizeBookingStatus(status: string) {
+  private normalizeBookingStatus(status: string): BookingStatus {
     const normalized = status.toUpperCase().replace(/-/g, "_");
-    switch (normalized) {
-      case "DRAFT":
-      case "PRICE_QUOTED":
-      case "TENTATIVE":
-      case "CONFIRMED":
-      case "COMPLETED":
-      case "CANCELLED":
-      case "EXPIRED":
-      case "LOST_SPACE_TAKEN":
-        return normalized;
-      default:
-        return "TENTATIVE";
+    // A-3: Validate against the Prisma enum — reject unknown values instead of
+    // silently defaulting to "TENTATIVE" which could mask data corruption.
+    if (Object.values(BookingStatus).includes(normalized as BookingStatus)) {
+      return normalized as BookingStatus;
     }
+    throw new BadRequestException(`Unknown booking status: "${status}"`);
   }
 
   private normalizePaymentStatus(totalAmount: number | null, paidAmount: number | null, balanceAmount: number | null) {

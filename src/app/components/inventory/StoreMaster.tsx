@@ -28,10 +28,10 @@ const getStatusBadge = (status: 'active' | 'inactive') => (
 
 export function StoreMaster({
   userName,
-  stores,
-  purchaseItems,
-  storeStocks,
-  stockTransfers,
+  stores = [],
+  purchaseItems = [],
+  storeStocks = [],
+  stockTransfers = [],
   onStoresChange,
 }: StoreMasterProps) {
   const [searchTerm, setSearchTerm] = useState('');

@@ -1229,9 +1229,10 @@ export function ConfirmedReservationForm({
   purchaseItems = [],
   slot,
 }: ConfirmedReservationFormProps) {
-  const currentSession = authStorage.load();
-  const currentUserName = currentSession?.user.fullName || 'System User';
-  const isAdminUser = currentSession?.user.role === 'ADMIN';
+  // S-1: Token now lives in HttpOnly cookie — only non-sensitive user profile is in localStorage.
+  const currentUser = authStorage.loadUser();
+  const currentUserName = currentUser?.fullName || 'System User';
+  const isAdminUser = currentUser?.role === 'ADMIN';
   const isPersistedConfirmedReservation = Boolean(
     initialData?.id && (initialData?.status === 'confirmed' || initialData?.status === 'completed'),
   );

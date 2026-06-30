@@ -1,11 +1,10 @@
 import { useMemo, useState } from 'react';
-import { CheckCircle, Edit2, Eye, Plus, Search, Trash2, XCircle } from 'lucide-react';
+import { Edit2, Eye, Plus, Search, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatCurrencyPKR } from '../../../lib/locale';
 import {
   convertUnitQuantity,
   ensureSelectedUnitOption,
-  formatUnitLabel,
   formatUnitOptionLabel,
   getUnitsForUsage,
   normalizeUnitCode,
@@ -92,10 +91,18 @@ const createVariant = (overrides?: Partial<MenuItemVariant>): MenuItemVariant =>
   };
 };
 
-const FormSection = ({ title, children }: { title: string; children: React.ReactNode }) => (
+const FormSection = ({
+  title,
+  children,
+  bodyClassName,
+}: {
+  title: string;
+  children: React.ReactNode;
+  bodyClassName?: string;
+}) => (
   <section className="rounded border border-slate-200 bg-white">
     <div className={sectionTitleClass}>{title}</div>
-    <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">{children}</div>
+    <div className={bodyClassName || 'grid grid-cols-1 gap-3 p-3 md:grid-cols-2'}>{children}</div>
   </section>
 );
 
@@ -201,17 +208,59 @@ const getSourceTypeForProductionType = (productionType: SellableProductionType) 
 const getProductionTypeLabel = (productionType: SellableProductionType) =>
   productionTypeOptions.find((option) => option.value === productionType)?.label || productionType.replace(/-/g, ' ');
 
-const getStatusLabel = (status: DishStatus) =>
-  statusOptions.find((option) => option.value === status)?.label || status.replace(/-/g, ' ');
-
 const getRecipeName = (recipe?: Recipe) => recipe?.recipeName || recipe?.id || '-';
-const getRecipeCost = (recipe?: Recipe) => recipe?.totalRecipeCost ?? recipe?.totalCost ?? 0;
-const getRecipeYieldQuantity = (recipe?: Recipe) => recipe?.yieldQuantity ?? recipe?.yields ?? 0;
 const getRecipeYieldUnit = (recipe?: Recipe) => recipe?.yieldUnitId || recipe?.yieldUnit || '-';
 const getRecipeCostPerYieldUnit = (recipe?: Recipe) =>
   recipe?.costPerYieldUnit ?? recipe?.costPerPortion ?? 0;
 
 const getDishCode = (dish: Dish) => dish.dishCode || '-';
+const getLinkedPurchaseItemId = (dish: Dish) => dish.resaleProfile?.linkedPurchaseItemIds?.[0];
+const getLinkedRecipe = (dish: Dish, recipesById: Map<string, Recipe>, recipes: Recipe[]) => {
+  const recipeById = dish.recipeId ? recipesById.get(dish.recipeId) : undefined;
+  return recipeById || recipes.find((recipe) => recipe.dishId === dish.id);
+};
+const formatDateTime = (value?: Date | string | null) => {
+  if (!value) {
+    return '-';
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '-';
+  }
+
+  return new Intl.DateTimeFormat('en-PK', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+};
+const getRecipeStatusMeta = (productionType: SellableProductionType, recipe?: Recipe) => {
+  if (productionType !== 'recipe-based') {
+    return {
+      label: 'Not Required',
+      className: 'bg-slate-100 text-slate-600',
+    };
+  }
+
+  if (!recipe) {
+    return {
+      label: 'Recipe Pending',
+      className: 'bg-amber-100 text-amber-700',
+    };
+  }
+
+  if (recipe.status === 'inactive') {
+    return {
+      label: 'Recipe Inactive',
+      className: 'bg-rose-100 text-rose-700',
+    };
+  }
+
+  return {
+    label: 'Recipe Created',
+    className: 'bg-emerald-100 text-emerald-700',
+  };
+};
 
 const generateDishCode = (dishes: Dish[]) => {
   const maxCodeNumber = dishes.reduce((max, dish) => {
@@ -235,7 +284,7 @@ export function BanquetDishMaster({
 }: BanquetDishMasterProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | DishStatus>('all');
-  const [cuisineFilter, setCuisineFilter] = useState('all');
+  const [productionTypeFilter, setProductionTypeFilter] = useState<'all' | SellableProductionType>('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [kitchenStationFilter, setKitchenStationFilter] = useState('all');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -278,17 +327,6 @@ export function BanquetDishMaster({
         }),
     [formLinkedPurchaseItemId, purchaseItems],
   );
-  const recipeOptions = useMemo(
-    () =>
-      editingDish
-        ? recipes.filter(
-            (recipe) =>
-              recipe.dishId === editingDish.id &&
-              (recipe.status !== 'inactive' || recipe.id === formRecipeId),
-          )
-        : [],
-    [editingDish, formRecipeId, recipes],
-  );
   const categoryNameMap = useMemo(
     () => new Map(dishCategories.map((category) => [category.code, category.name])),
     [dishCategories],
@@ -302,15 +340,11 @@ export function BanquetDishMaster({
   const selectedRecipe = formRecipeId ? recipesById.get(formRecipeId) : undefined;
   const selectedPurchaseItem = formLinkedPurchaseItemId ? purchaseItemsById.get(formLinkedPurchaseItemId) : undefined;
   const recipeRequiredForApproval = formProductionType === 'recipe-based' && formStatus === 'approved';
-  const canSelectRecipe = formProductionType === 'recipe-based' && recipeOptions.length > 0;
   const defaultVariant = getDefaultVariant(formSalesVariants);
   const defaultVariantIsMenuBased = isMenuBasedSalesUnit(defaultVariant?.salesUnit);
-  const recipeYieldUnit = selectedRecipe ? getRecipeYieldUnit(selectedRecipe) : 'recipe unit';
   const recipeQuantityUnit = selectedRecipe ? getRecipeYieldUnit(selectedRecipe) : '';
-  const purchasedReadyIssueUnit = selectedPurchaseItem ? getPurchaseItemIssueUnit(selectedPurchaseItem) : '';
   const purchasedReadyUnitCost = getPurchaseItemUnitCost(selectedPurchaseItem);
   const purchasedReadyInventoryType = selectedPurchaseItem ? getPurchaseItemInventoryType(selectedPurchaseItem) : undefined;
-  const purchasedReadyCurrentStock = selectedPurchaseItem?.currentStock ?? 0;
   const getPurchasedReadyVariantCost = (variant: MenuItemVariant) => {
     if (!selectedPurchaseItem) {
       return 0;
@@ -328,7 +362,6 @@ export function BanquetDishMaster({
 
     return requiredQuantity === null ? 0 : requiredQuantity * purchasedReadyUnitCost;
   };
-  const recipeCost = formProductionType === 'recipe-based' ? getRecipeCost(selectedRecipe) : 0;
   const recipeCostPerYieldUnit =
     formProductionType === 'recipe-based'
       ? getRecipeCostPerYieldUnit(selectedRecipe)
@@ -344,34 +377,104 @@ export function BanquetDishMaster({
         ? getPurchasedReadyVariantCost(defaultVariant)
         : 0
     : 0;
-  const defaultSellingPrice = defaultVariant?.sellingPrice || 0;
-  const foodCostPercentage =
-    !defaultVariantIsMenuBased && defaultSellingPrice > 0 ? (defaultVariantCost / defaultSellingPrice) * 100 : 0;
-  const grossMargin = defaultVariantIsMenuBased ? 0 : defaultSellingPrice - defaultVariantCost;
   const normalizedSearch = searchTerm.trim().toLowerCase();
 
   const banquetDishes = useMemo(
     () => dishes.filter((dish) => dish.module === 'banquet'),
     [dishes],
   );
+  const registerRows = useMemo(
+    () =>
+      banquetDishes.map((dish) => {
+        const productionType = resolveDishProductionType(dish);
+        const recipe = getLinkedRecipe(dish, recipesById, recipes);
+        const linkedPurchaseItem = getLinkedPurchaseItemId(dish)
+          ? purchaseItemsById.get(getLinkedPurchaseItemId(dish) || '')
+          : undefined;
+        const defaultDishVariant = getDefaultVariant(getDishVariants(dish));
+        const variantIsMenuBased = isMenuBasedSalesUnit(defaultDishVariant?.salesUnit);
+        const variantBaseQuantity = getVariantBaseQuantity(defaultDishVariant);
+        const purchaseIssueUnit = linkedPurchaseItem ? getPurchaseItemIssueUnit(linkedPurchaseItem) : '';
+        const purchaseSourceUnit = defaultDishVariant?.quantityUnit || purchaseIssueUnit;
+        const convertedPurchaseQuantity =
+          linkedPurchaseItem && purchaseSourceUnit && purchaseIssueUnit
+            ? purchaseSourceUnit === purchaseIssueUnit
+              ? variantBaseQuantity
+              : convertUnitQuantity(variantBaseQuantity, purchaseSourceUnit, purchaseIssueUnit, units)
+            : null;
+        const purchasedReadyCost =
+          linkedPurchaseItem && !variantIsMenuBased
+            ? (convertedPurchaseQuantity === null && defaultDishVariant?.quantityUnit === defaultDishVariant?.salesUnit
+                ? variantBaseQuantity
+                : convertedPurchaseQuantity || 0) * getPurchaseItemUnitCost(linkedPurchaseItem)
+            : 0;
+        const recipeBasedCost =
+          recipe && !variantIsMenuBased ? variantBaseQuantity * getRecipeCostPerYieldUnit(recipe) : 0;
+        const latestCost =
+          productionType === 'recipe-based'
+            ? recipeBasedCost || dish.defaultVariantCost || defaultDishVariant?.estimatedCost || dish.estimatedCost || 0
+            : productionType === 'purchased-ready'
+              ? purchasedReadyCost ||
+                dish.defaultVariantCost ||
+                defaultDishVariant?.estimatedCost ||
+                dish.estimatedCost ||
+                getPurchaseItemUnitCost(linkedPurchaseItem)
+              : dish.defaultVariantCost || defaultDishVariant?.estimatedCost || dish.estimatedCost || 0;
+        const hasLatestCost =
+          productionType === 'recipe-based'
+            ? Boolean(recipe)
+            : productionType === 'purchased-ready'
+              ? Boolean(linkedPurchaseItem)
+              : latestCost > 0;
+        const lastCostUpdateAt =
+          productionType === 'recipe-based'
+            ? recipe?.updatedAt
+            : productionType === 'purchased-ready'
+              ? linkedPurchaseItem?.updatedAt
+              : hasLatestCost
+                ? dish.updatedAt
+                : undefined;
+        const stationId = dish.kitchenStationId || dish.preparationArea;
+        const recipeStatus = getRecipeStatusMeta(productionType, recipe);
 
-  const filteredDishes = banquetDishes.filter((dish) => {
-    const productionType = resolveDishProductionType(dish);
-    const recipe = dish.recipeId ? recipesById.get(dish.recipeId) : undefined;
-    const matchesSearch =
-      !normalizedSearch ||
-      dish.dishName.toLowerCase().includes(normalizedSearch) ||
-      (dish.dishCode || '').toLowerCase().includes(normalizedSearch) ||
-      dish.cuisineName.toLowerCase().includes(normalizedSearch) ||
-      getRecipeName(recipe).toLowerCase().includes(normalizedSearch);
-    const matchesStatus = statusFilter === 'all' || dish.status === statusFilter;
-    const matchesCuisine = cuisineFilter === 'all' || dish.cuisineId === cuisineFilter;
-    const matchesCategory = categoryFilter === 'all' || dish.category === categoryFilter || dish.categoryId === categoryFilter;
-    const stationId = dish.kitchenStationId || dish.preparationArea;
-    const matchesKitchenStation = kitchenStationFilter === 'all' || stationId === kitchenStationFilter;
+        return {
+          dish,
+          recipe,
+          linkedPurchaseItem,
+          productionType,
+          recipeStatus,
+          latestCost,
+          hasLatestCost,
+          lastCostUpdateAt,
+          stationId,
+          usageLabels: getDishUsageLabels(dish),
+        };
+      }),
+    [banquetDishes, purchaseItemsById, recipes, recipesById, units],
+  );
+  const filteredDishes = useMemo(
+    () =>
+      registerRows.filter((row) => {
+        const { dish, linkedPurchaseItem, productionType, recipe, stationId, usageLabels } = row;
+        const matchesSearch =
+          !normalizedSearch ||
+          dish.dishName.toLowerCase().includes(normalizedSearch) ||
+          (dish.dishCode || '').toLowerCase().includes(normalizedSearch) ||
+          dish.cuisineName.toLowerCase().includes(normalizedSearch) ||
+          (categoryNameMap.get(dish.category) || dish.category || '').toLowerCase().includes(normalizedSearch) ||
+          (stationNameMap.get(stationId) || stationId || '').toLowerCase().includes(normalizedSearch) ||
+          getRecipeName(recipe).toLowerCase().includes(normalizedSearch) ||
+          (linkedPurchaseItem?.itemName || '').toLowerCase().includes(normalizedSearch) ||
+          usageLabels.some((label) => label.toLowerCase().includes(normalizedSearch));
+        const matchesStatus = statusFilter === 'all' || dish.status === statusFilter;
+        const matchesProductionType = productionTypeFilter === 'all' || productionType === productionTypeFilter;
+        const matchesCategory = categoryFilter === 'all' || dish.category === categoryFilter || dish.categoryId === categoryFilter;
+        const matchesKitchenStation = kitchenStationFilter === 'all' || stationId === kitchenStationFilter;
 
-    return matchesSearch && matchesStatus && matchesCuisine && matchesCategory && matchesKitchenStation && productionType;
-  });
+        return matchesSearch && matchesStatus && matchesProductionType && matchesCategory && matchesKitchenStation;
+      }),
+    [categoryFilter, categoryNameMap, kitchenStationFilter, normalizedSearch, productionTypeFilter, registerRows, stationNameMap, statusFilter],
+  );
 
   const openDialog = (dish: Dish | null, nextViewMode: boolean) => {
     if (!dish) {
@@ -396,6 +499,7 @@ export function BanquetDishMaster({
     }
 
     const productionType = resolveDishProductionType(dish);
+    const linkedRecipe = getLinkedRecipe(dish, recipesById, recipes);
     setEditingDish(dish);
     setFormDishName(dish.dishName);
     setFormDishCode(dish.dishCode || generateDishCode(dishes));
@@ -403,8 +507,8 @@ export function BanquetDishMaster({
     setFormCategory(dish.categoryId || dish.category);
     setFormKitchenStation(dish.kitchenStationId || dish.preparationArea);
     setFormProductionType(productionType);
-    setFormRecipeId(productionType === 'recipe-based' ? dish.recipeId || '' : '');
-    setFormLinkedPurchaseItemId(productionType === 'purchased-ready' ? dish.resaleProfile?.linkedPurchaseItemIds?.[0] || '' : '');
+    setFormRecipeId(productionType === 'recipe-based' ? linkedRecipe?.id || '' : '');
+    setFormLinkedPurchaseItemId(productionType === 'purchased-ready' ? getLinkedPurchaseItemId(dish) || '' : '');
     setFormStatus(dish.status);
     setFormDescription(dish.description || '');
     setFormUsageFlags(normalizeDishUsageFlags(dish));
@@ -437,6 +541,24 @@ export function BanquetDishMaster({
     if (nextProductionType !== 'recipe-based') {
       setFormRecipeId('');
     }
+    if (nextProductionType !== 'purchased-ready') {
+      setFormLinkedPurchaseItemId('');
+    }
+    setFormSalesVariants((current) =>
+      current.map((variant) =>
+        createVariant({
+          ...variant,
+          quantityUnit:
+            isMenuBasedSalesUnit(variant.salesUnit)
+              ? variant.salesUnit
+              : nextProductionType === 'recipe-based' && recipeQuantityUnit && recipeQuantityUnit !== '-'
+                ? recipeQuantityUnit
+                : nextProductionType === 'purchased-ready' && selectedPurchaseItem
+                  ? getPurchaseItemIssueUnit(selectedPurchaseItem)
+                  : variant.quantityUnit || variant.salesUnit,
+        }),
+      ),
+    );
   };
 
   const handleLinkedPurchaseItemChange = (purchaseItemId: string) => {
@@ -653,133 +775,113 @@ export function BanquetDishMaster({
       return;
     }
 
-    const selectedCuisine = cuisines.find((cuisine) => cuisine.id === formCuisineId);
-    const selectedRecipeForSave = formRecipeId ? recipesById.get(formRecipeId) : undefined;
-    const sourceType = getSourceTypeForProductionType(formProductionType);
-    const recipeYieldUnitForSave = selectedRecipeForSave ? getRecipeYieldUnit(selectedRecipeForSave) : undefined;
-    const purchasedReadyIssueUnitForSave = selectedPurchaseItem ? getPurchaseItemIssueUnit(selectedPurchaseItem) : undefined;
-    const normalizedVariants = ensureDefaultVariant(
-      formSalesVariants.map((variant) => {
-        const variantIsMenuBased = isMenuBasedSalesUnit(variant.salesUnit);
-        const baseQuantity = variantIsMenuBased ? 0 : getVariantBaseQuantity(variant);
-        const variantCost =
-          variantIsMenuBased
-            ? 0
-            : formProductionType === 'recipe-based'
-            ? baseQuantity * recipeCostPerYieldUnit
-            : formProductionType === 'purchased-ready'
-              ? getPurchasedReadyVariantCost(variant)
-              : 0;
-        const normalizedVariant = createVariant({
-          ...variant,
-          label: variant.label.trim(),
-          variantLabel: variant.label.trim(),
-          quantity: Number(variant.quantity) || 1,
-          salesQuantity: Number(variant.quantity) || 1,
-          portionBaseQuantity: variantIsMenuBased ? undefined : baseQuantity || Number(variant.quantity) || 1,
-          salesUnit: variant.salesUnit || fallbackSalesUnit,
-          salesUnitId: variant.salesUnit || fallbackSalesUnit,
-          quantityUnit:
-            variantIsMenuBased
-              ? variant.salesUnit || fallbackSalesUnit
-              : formProductionType === 'recipe-based' && recipeYieldUnitForSave && recipeYieldUnitForSave !== '-'
-              ? recipeYieldUnitForSave
-              : formProductionType === 'purchased-ready' && purchasedReadyIssueUnitForSave
-              ? purchasedReadyIssueUnitForSave
-              : variant.quantityUnit || variant.salesUnit || fallbackSalesUnit,
-          sellingPrice: Number(variant.sellingPrice) || 0,
-          estimatedCost: variantCost,
-          status: variant.status || (variant.active === false ? 'inactive' : 'active'),
-          active: variant.status ? variant.status !== 'inactive' : variant.active !== false,
-        });
+    try {
+      const selectedCuisine = cuisines.find((cuisine) => cuisine.id === formCuisineId);
+      const sourceType = getSourceTypeForProductionType(formProductionType);
+      const purchasedReadyIssueUnitForSave = selectedPurchaseItem ? getPurchaseItemIssueUnit(selectedPurchaseItem) : undefined;
+      const shouldClearCostSnapshot = formProductionType !== 'service-item';
+      const normalizedVariants = ensureDefaultVariant(
+        formSalesVariants.map((variant) => {
+          const variantIsMenuBased = isMenuBasedSalesUnit(variant.salesUnit);
+          const baseQuantity = variantIsMenuBased ? 0 : getVariantBaseQuantity(variant);
+          const normalizedVariant = createVariant({
+            ...variant,
+            label: variant.label.trim(),
+            variantLabel: variant.label.trim(),
+            quantity: Number(variant.quantity) || 1,
+            salesQuantity: Number(variant.quantity) || 1,
+            portionBaseQuantity: variantIsMenuBased ? undefined : baseQuantity || Number(variant.quantity) || 1,
+            salesUnit: variant.salesUnit || fallbackSalesUnit,
+            salesUnitId: variant.salesUnit || fallbackSalesUnit,
+            quantityUnit:
+              variantIsMenuBased
+                ? variant.salesUnit || fallbackSalesUnit
+                : formProductionType === 'recipe-based' && recipeQuantityUnit && recipeQuantityUnit !== '-'
+                  ? recipeQuantityUnit
+                  : formProductionType === 'purchased-ready' && purchasedReadyIssueUnitForSave
+                    ? purchasedReadyIssueUnitForSave
+                    : variant.quantityUnit || variant.salesUnit || fallbackSalesUnit,
+            sellingPrice: Number(variant.sellingPrice) || 0,
+            estimatedCost: shouldClearCostSnapshot ? 0 : Number(variant.estimatedCost) || 0,
+            status: variant.status || (variant.active === false ? 'inactive' : 'active'),
+            active: variant.status ? variant.status !== 'inactive' : variant.active !== false,
+          });
 
-        return variantIsMenuBased
+          return variantIsMenuBased
+            ? {
+                ...normalizedVariant,
+                portionBaseQuantity: undefined,
+                quantityUnit: variant.salesUnit || fallbackSalesUnit,
+              }
+            : normalizedVariant;
+        }),
+      );
+      const normalizedDefaultVariant = getDefaultVariant(normalizedVariants);
+      const now = new Date();
+      const recipeId = formProductionType === 'recipe-based' ? formRecipeId || undefined : undefined;
+      const resaleProfile =
+        formProductionType === 'purchased-ready' && formLinkedPurchaseItemId
+          ? { linkedPurchaseItemIds: [formLinkedPurchaseItemId] }
+          : undefined;
+
+      const dishPayload: Dish = {
+        ...(editingDish || {
+          id: `dish-${Date.now()}`,
+          module: 'banquet',
+          createdBy: userName,
+          createdAt: now,
+        }),
+        dishCode: formDishCode,
+        dishName: formDishName.trim(),
+        cuisineId: formCuisineId,
+        cuisineName: selectedCuisine?.name || '',
+        categoryId: formCategory,
+        category: formCategory,
+        kitchenStationId: formKitchenStation,
+        preparationArea: formKitchenStation,
+        sourceType,
+        productionType: formProductionType,
+        issuedFrom: editingDish?.issuedFrom || 'kitchen',
+        unitOfSale: normalizedDefaultVariant?.salesUnit || fallbackSalesUnit,
+        status: formStatus,
+        description: formDescription.trim() || undefined,
+        salesVariants: normalizedVariants,
+        resaleProfile,
+        outsourceProfile: undefined,
+        usageFlags: normalizeDishUsageFlags(formUsageFlags),
+        hasRecipe: Boolean(recipeId),
+        recipeId,
+        estimatedCost: shouldClearCostSnapshot ? 0 : editingDish?.estimatedCost || 0,
+        costPerBaseUnit: shouldClearCostSnapshot ? 0 : editingDish?.costPerBaseUnit || 0,
+        sellingPrice: editingDish?.sellingPrice || 0,
+        recipeCost: shouldClearCostSnapshot ? 0 : editingDish?.recipeCost || 0,
+        defaultVariantCost: shouldClearCostSnapshot ? 0 : editingDish?.defaultVariantCost || 0,
+        defaultSellingPrice: editingDish?.defaultSellingPrice || 0,
+        foodCostPercentage: shouldClearCostSnapshot ? 0 : editingDish?.foodCostPercentage || 0,
+        grossMargin: shouldClearCostSnapshot ? 0 : editingDish?.grossMargin || 0,
+        updatedBy: userName,
+        updatedAt: now,
+        ...(formStatus === 'approved' && !editingDish?.approvedBy
           ? {
-              ...normalizedVariant,
-              portionBaseQuantity: undefined,
-              quantityUnit: variant.salesUnit || fallbackSalesUnit,
-              estimatedCost: 0,
+              approvedBy: userName,
+              approvedAt: now,
             }
-          : normalizedVariant;
-      }),
-    );
-    const normalizedDefaultVariant = getDefaultVariant(normalizedVariants);
-    const normalizedDefaultVariantIsMenuBased = isMenuBasedSalesUnit(normalizedDefaultVariant?.salesUnit);
-    const recipeCostForSave = formProductionType === 'recipe-based' ? getRecipeCost(selectedRecipeForSave) : 0;
-    const defaultVariantCostForSave = normalizedDefaultVariantIsMenuBased ? 0 : normalizedDefaultVariant?.estimatedCost || 0;
-    const defaultSellingPriceForSave = normalizedDefaultVariant?.sellingPrice || 0;
-    const foodCostPercentageForSave =
-      !normalizedDefaultVariantIsMenuBased && defaultSellingPriceForSave > 0
-        ? (defaultVariantCostForSave / defaultSellingPriceForSave) * 100
-        : 0;
-    const grossMarginForSave = normalizedDefaultVariantIsMenuBased ? 0 : defaultSellingPriceForSave - defaultVariantCostForSave;
-    const now = new Date();
-    const recipeId = formProductionType === 'recipe-based' ? formRecipeId : undefined;
-    const resaleProfile =
-      formProductionType === 'purchased-ready' && formLinkedPurchaseItemId
-        ? { linkedPurchaseItemIds: [formLinkedPurchaseItemId] }
-        : undefined;
-    const costPerBaseUnitForSave =
-      formProductionType === 'recipe-based'
-        ? recipeCostPerYieldUnit
-        : formProductionType === 'purchased-ready'
-          ? purchasedReadyUnitCost
-          : 0;
+          : {}),
+      };
 
-    const dishPayload: Dish = {
-      ...(editingDish || {
-        id: `dish-${Date.now()}`,
-        module: 'banquet',
-        createdBy: userName,
-        createdAt: now,
-      }),
-      dishCode: formDishCode,
-      dishName: formDishName.trim(),
-      cuisineId: formCuisineId,
-      cuisineName: selectedCuisine?.name || '',
-      categoryId: formCategory,
-      category: formCategory,
-      kitchenStationId: formKitchenStation,
-      preparationArea: formKitchenStation,
-      sourceType,
-      productionType: formProductionType,
-      issuedFrom: editingDish?.issuedFrom || 'kitchen',
-      unitOfSale: normalizedDefaultVariant?.salesUnit || fallbackSalesUnit,
-      status: formStatus,
-      description: formDescription.trim() || undefined,
-      salesVariants: normalizedVariants,
-      resaleProfile,
-      outsourceProfile: undefined,
-      usageFlags: normalizeDishUsageFlags(formUsageFlags),
-      hasRecipe: Boolean(recipeId),
-      recipeId,
-      estimatedCost: costPerBaseUnitForSave,
-      costPerBaseUnit: costPerBaseUnitForSave,
-      sellingPrice: defaultSellingPriceForSave,
-      recipeCost: recipeCostForSave,
-      defaultVariantCost: defaultVariantCostForSave,
-      defaultSellingPrice: defaultSellingPriceForSave,
-      foodCostPercentage: foodCostPercentageForSave,
-      grossMargin: grossMarginForSave,
-      updatedBy: userName,
-      updatedAt: now,
-      ...(formStatus === 'approved' && !editingDish?.approvedBy
-        ? {
-            approvedBy: userName,
-            approvedAt: now,
-          }
-        : {}),
-    };
+      if (editingDish) {
+        onDishesChange(dishes.map((dish) => (dish.id === editingDish.id ? dishPayload : dish)));
+        toast.success('Dish updated successfully');
+      } else {
+        onDishesChange([...dishes, dishPayload]);
+        toast.success('Dish created successfully');
+      }
 
-    if (editingDish) {
-      onDishesChange(dishes.map((dish) => (dish.id === editingDish.id ? dishPayload : dish)));
-      toast.success('Dish updated successfully');
-    } else {
-      onDishesChange([...dishes, dishPayload]);
-      toast.success('Dish created successfully');
+      setDialogOpen(false);
+    } catch (error) {
+      console.error('Failed to save banquet dish', error);
+      toast.error('Dish could not be saved. Please try again.');
     }
-
-    setDialogOpen(false);
   };
 
   const getStatusBadge = (status: DishStatus) => {
@@ -792,6 +894,23 @@ export function BanquetDishMaster({
     }
     return <span className={`${baseClass} bg-slate-100 text-slate-600`}>Inactive</span>;
   };
+  const formRecipeStatus = getRecipeStatusMeta(formProductionType, selectedRecipe);
+  const formLatestCost =
+    formProductionType === 'service-item'
+      ? editingDish?.defaultVariantCost || defaultVariant?.estimatedCost || editingDish?.estimatedCost || 0
+      : defaultVariantCost;
+  const formHasLatestCost =
+    formProductionType === 'recipe-based'
+      ? Boolean(selectedRecipe)
+      : formProductionType === 'purchased-ready'
+        ? Boolean(selectedPurchaseItem)
+        : formLatestCost > 0;
+  const formLastCostUpdateAt =
+    formProductionType === 'recipe-based'
+      ? selectedRecipe?.updatedAt
+      : formProductionType === 'purchased-ready'
+        ? selectedPurchaseItem?.updatedAt
+        : editingDish?.updatedAt;
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
@@ -802,25 +921,25 @@ export function BanquetDishMaster({
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search Dish"
+              placeholder="Search dish, linked item, category, station"
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               className="h-9 w-full rounded border border-slate-300 bg-white pl-9 pr-3 text-sm text-slate-700 placeholder:text-slate-400"
             />
           </div>
+          <select value={productionTypeFilter} onChange={(event) => setProductionTypeFilter(event.target.value as 'all' | SellableProductionType)} className="h-9 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700">
+            <option value="all">All Production Types</option>
+            {productionTypeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | DishStatus)} className="h-9 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700">
             <option value="all">All Status</option>
             {statusOptions.map((status) => (
               <option key={status.value} value={status.value}>
                 {status.label}
-              </option>
-            ))}
-          </select>
-          <select value={cuisineFilter} onChange={(event) => setCuisineFilter(event.target.value)} className="h-9 rounded border border-slate-300 bg-white px-3 text-sm text-slate-700">
-            <option value="all">All Cuisines</option>
-            {cuisines.map((cuisine) => (
-              <option key={cuisine.id} value={cuisine.id}>
-                {cuisine.name}
               </option>
             ))}
           </select>
@@ -853,8 +972,9 @@ export function BanquetDishMaster({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span><strong className="text-slate-900">Dishes:</strong> {banquetDishes.length}</span>
             <span><strong className="text-slate-900">Active:</strong> {banquetDishes.filter((dish) => dish.status === 'approved').length}</span>
-            <span><strong className="text-slate-900">Draft:</strong> {banquetDishes.filter((dish) => dish.status === 'draft').length}</span>
-            <span><strong className="text-slate-900">Recipe Based:</strong> {banquetDishes.filter((dish) => resolveDishProductionType(dish) === 'recipe-based').length}</span>
+            <span><strong className="text-slate-900">Recipe Pending:</strong> {registerRows.filter((row) => row.productionType === 'recipe-based' && !row.recipe).length}</span>
+            <span><strong className="text-slate-900">Purchased Ready:</strong> {registerRows.filter((row) => row.productionType === 'purchased-ready').length}</span>
+            <span><strong className="text-slate-900">Link Pending:</strong> {registerRows.filter((row) => row.productionType === 'purchased-ready' && !row.linkedPurchaseItem).length}</span>
           </div>
         </div>
       </div>
@@ -871,50 +991,60 @@ export function BanquetDishMaster({
                 <tr>
                   <th className={tableHeadClass}>Dish Code</th>
                   <th className={tableHeadClass}>Dish Name</th>
-                  <th className={tableHeadClass}>Cuisine</th>
-                  <th className={tableHeadClass}>Category</th>
-                  <th className={tableHeadClass}>Kitchen Station</th>
                   <th className={tableHeadClass}>Production Type</th>
-                  <th className={tableHeadClass}>Recipe</th>
-                  <th className={`${tableHeadClass} text-right`}>Cost</th>
-                  <th className={`${tableHeadClass} text-right`}>Default Selling Price</th>
-                  <th className={`${tableHeadClass} text-right`}>Food Cost %</th>
+                  <th className={tableHeadClass}>Linked Purchase Item</th>
+                  <th className={tableHeadClass}>Recipe Status</th>
+                  <th className={`${tableHeadClass} text-right`}>Latest Cost</th>
+                  <th className={tableHeadClass}>Last Cost Update</th>
+                  <th className={tableHeadClass}>Usage</th>
                   <th className={tableHeadClass}>Status</th>
                   <th className={`${tableHeadClass} text-right`}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredDishes.map((dish) => {
-                  const recipe = dish.recipeId ? recipesById.get(dish.recipeId) : undefined;
-                  const defaultDishVariant = getDefaultVariant(getDishVariants(dish));
-                  const dishProductionType = resolveDishProductionType(dish);
-                  const defaultPrice = dish.defaultSellingPrice ?? defaultDishVariant?.sellingPrice ?? dish.sellingPrice ?? 0;
-                  const cost = dish.defaultVariantCost ?? defaultDishVariant?.estimatedCost ?? dish.estimatedCost ?? 0;
-                  const foodCost = dish.foodCostPercentage ?? (defaultPrice > 0 ? (cost / defaultPrice) * 100 : 0);
-                  const stationId = dish.kitchenStationId || dish.preparationArea;
-
+                {filteredDishes.map((row) => {
+                  const { dish, linkedPurchaseItem, productionType, recipeStatus, latestCost, hasLatestCost, lastCostUpdateAt, stationId, usageLabels } = row;
                   return (
                     <tr key={dish.id} className="border-t border-slate-200 hover:bg-slate-50">
                       <td className={tableCellClass}>{getDishCode(dish)}</td>
                       <td className={tableCellClass}>
                         <div className="font-medium text-slate-900">{dish.dishName}</div>
-                        {dish.description ? <div className="max-w-[220px] truncate text-xs text-slate-500">{dish.description}</div> : null}
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {getDishUsageLabels(dish).map((label) => (
+                        <div className="text-xs text-slate-500">
+                          {categoryNameMap.get(dish.category) || dish.category || '-'} | {stationNameMap.get(stationId) || stationId || '-'}
+                        </div>
+                        {dish.description ? <div className="max-w-[260px] truncate text-xs text-slate-500">{dish.description}</div> : null}
+                      </td>
+                      <td className={tableCellClass}>{getProductionTypeLabel(productionType)}</td>
+                      <td className={tableCellClass}>
+                        {linkedPurchaseItem ? (
+                          <div>
+                            <div className="font-medium text-slate-900">{linkedPurchaseItem.itemName}</div>
+                            <div className="text-xs text-slate-500">{linkedPurchaseItem.itemCode || 'Auto Code'}</div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">-</span>
+                        )}
+                      </td>
+                      <td className={tableCellClass}>
+                        <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${recipeStatus.className}`}>
+                          {recipeStatus.label}
+                        </span>
+                      </td>
+                      <td className={`${tableCellClass} text-right font-medium text-slate-900`}>
+                        {hasLatestCost ? formatCurrencyPKR(latestCost) : '-'}
+                      </td>
+                      <td className={tableCellClass}>{formatDateTime(lastCostUpdateAt)}</td>
+                      <td className={tableCellClass}>
+                        <div className="flex max-w-[220px] flex-wrap gap-1">
+                          {usageLabels.length > 0 ? usageLabels.map((label) => (
                             <span key={label} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
                               {label}
                             </span>
-                          ))}
+                          )) : (
+                            <span className="text-slate-400">-</span>
+                          )}
                         </div>
                       </td>
-                      <td className={tableCellClass}>{dish.cuisineName}</td>
-                      <td className={tableCellClass}>{categoryNameMap.get(dish.category) || dish.category}</td>
-                      <td className={tableCellClass}>{stationNameMap.get(stationId) || stationId}</td>
-                      <td className={tableCellClass}>{getProductionTypeLabel(dishProductionType)}</td>
-                      <td className={tableCellClass}>{recipe ? getRecipeName(recipe) : '-'}</td>
-                      <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{formatCurrencyPKR(cost)}</td>
-                      <td className={`${tableCellClass} text-right font-medium text-slate-900`}>{formatCurrencyPKR(defaultPrice)}</td>
-                      <td className={`${tableCellClass} text-right`}>{Number.isFinite(foodCost) ? `${foodCost.toFixed(2)}%` : '0.00%'}</td>
                       <td className={tableCellClass}>{getStatusBadge(dish.status)}</td>
                       <td className={`${tableCellClass} text-right`}>
                         <div className="inline-flex items-center gap-1">
@@ -932,11 +1062,6 @@ export function BanquetDishMaster({
                           >
                             <Edit2 className="size-4" />
                           </button>
-                          {dish.status === 'approved' ? (
-                            <CheckCircle className="size-4 text-emerald-600" />
-                          ) : (
-                            <XCircle className="size-4 text-slate-400" />
-                          )}
                         </div>
                       </td>
                     </tr>
@@ -944,8 +1069,8 @@ export function BanquetDishMaster({
                 })}
                 {filteredDishes.length === 0 ? (
                   <tr>
-                    <td className="px-3 py-8 text-center text-sm text-slate-500" colSpan={12}>
-                      {searchTerm || statusFilter !== 'all' || cuisineFilter !== 'all' || categoryFilter !== 'all' || kitchenStationFilter !== 'all'
+                    <td className="px-3 py-8 text-center text-sm text-slate-500" colSpan={10}>
+                      {searchTerm || statusFilter !== 'all' || productionTypeFilter !== 'all' || categoryFilter !== 'all' || kitchenStationFilter !== 'all'
                         ? 'No dishes found matching your filters.'
                         : 'No dishes yet. Click "Add New Dish" to get started.'}
                     </td>
@@ -959,13 +1084,13 @@ export function BanquetDishMaster({
 
       {dialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3">
-          <div className="flex max-h-[94vh] w-full max-w-7xl flex-col rounded bg-white shadow-xl">
+          <div className="flex max-h-[94vh] w-full max-w-6xl flex-col rounded bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">
                   {viewMode ? 'View Dish' : editingDish ? 'Edit Dish' : 'Create Dish'}
                 </h2>
-                <p className="text-xs text-slate-500">Kitchen ERP sellable dish setup</p>
+                <p className="text-xs text-slate-500">Sellable menu item setup only. Recipe and costing stay in Recipe & Costing.</p>
               </div>
               <button onClick={() => setDialogOpen(false)} className="rounded p-1.5 text-slate-500 hover:bg-slate-100">
                 <XCircle className="size-5" />
@@ -974,7 +1099,7 @@ export function BanquetDishMaster({
 
             <div className="flex-1 overflow-y-auto p-3">
               <div className="space-y-3">
-                <FormSection title="Basic Dish Information">
+                <FormSection title="Dish Setup" bodyClassName="grid grid-cols-1 gap-3 p-3 md:grid-cols-2 xl:grid-cols-4">
                   <div>
                     <label className={labelClass}>Dish Name <span className="text-red-500">*</span></label>
                     <input
@@ -991,18 +1116,7 @@ export function BanquetDishMaster({
                     <input type="text" value={formDishCode} readOnly className={inputClass} />
                   </div>
                   <div>
-                    <label className={labelClass}>Cuisine <span className="text-red-500">*</span></label>
-                    <select value={formCuisineId} onChange={(event) => setFormCuisineId(event.target.value)} disabled={viewMode} className={inputClass}>
-                      <option value="">Select cuisine</option>
-                      {cuisines.map((cuisine) => (
-                        <option key={cuisine.id} value={cuisine.id}>
-                          {cuisine.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelClass}>Dish Category <span className="text-red-500">*</span></label>
+                    <label className={labelClass}>Category <span className="text-red-500">*</span></label>
                     <select value={formCategory} onChange={(event) => setFormCategory(event.target.value as DishCategory)} disabled={viewMode} className={inputClass}>
                       <option value="">Select dish category</option>
                       {activeCategories.map((category) => (
@@ -1024,19 +1138,6 @@ export function BanquetDishMaster({
                     </select>
                   </div>
                   <div>
-                    <label className={labelClass}>Status <span className="text-red-500">*</span></label>
-                    <select value={formStatus} onChange={(event) => setFormStatus(event.target.value as DishStatus)} disabled={viewMode} className={inputClass}>
-                      {statusOptions.map((status) => (
-                        <option key={status.value} value={status.value}>
-                          {status.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </FormSection>
-
-                <FormSection title="Production Setup">
-                  <div>
                     <label className={labelClass}>Production Type <span className="text-red-500">*</span></label>
                     <select
                       value={formProductionType}
@@ -1051,28 +1152,37 @@ export function BanquetDishMaster({
                       ))}
                     </select>
                   </div>
-                  <div className="flex items-end">
-                    <div className="w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                      {formProductionType === 'recipe-based'
-                        ? 'Draft dishes can be created before recipe costing. Active dishes require a linked recipe.'
-                        : formProductionType === 'purchased-ready'
-                          ? 'Purchased ready dishes do not require a recipe, but they should link to one purchase item for costing and stock issue.'
-                          : 'Service items do not affect inventory from Dish Master.'}
-                    </div>
+                  <div>
+                    <label className={labelClass}>Status <span className="text-red-500">*</span></label>
+                    <select value={formStatus} onChange={(event) => setFormStatus(event.target.value as DishStatus)} disabled={viewMode} className={inputClass}>
+                      {statusOptions.map((status) => (
+                        <option key={status.value} value={status.value}>
+                          {status.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </FormSection>
-
-                {formProductionType === 'purchased-ready' ? (
-                  <FormSection title="Purchased Ready Mapping">
-                    <div>
-                      <label className={labelClass}>Linked Purchase Item {formStatus === 'approved' ? <span className="text-red-500">*</span> : null}</label>
+                  <div>
+                    <label className={labelClass}>Cuisine <span className="text-red-500">*</span></label>
+                    <select value={formCuisineId} onChange={(event) => setFormCuisineId(event.target.value)} disabled={viewMode} className={inputClass}>
+                      <option value="">Select cuisine</option>
+                      {cuisines.map((cuisine) => (
+                        <option key={cuisine.id} value={cuisine.id}>
+                          {cuisine.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {formProductionType === 'purchased-ready' ? (
+                    <div className="xl:col-span-2">
+                      <label className={labelClass}>Linked Finished Purchase Item {formStatus === 'approved' ? <span className="text-red-500">*</span> : null}</label>
                       <select
                         value={formLinkedPurchaseItemId}
                         onChange={(event) => handleLinkedPurchaseItemChange(event.target.value)}
                         disabled={viewMode}
                         className={inputClass}
                       >
-                        <option value="">{purchaseItemOptions.length > 0 ? 'Select purchase item' : 'No purchase items available'}</option>
+                        <option value="">{purchaseItemOptions.length > 0 ? 'Select finished purchase item' : 'No purchase items available'}</option>
                         {purchaseItemOptions.map((item) => (
                           <option key={item.id} value={item.id}>
                             {item.itemName} ({item.itemCode || 'Auto'})
@@ -1080,37 +1190,52 @@ export function BanquetDishMaster({
                         ))}
                       </select>
                     </div>
-                    <div className="flex items-end">
-                      <div className="w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                        Link the stock item that should be consumed when this menu dish is sold in a package.
+                  ) : null}
+                  <div className="md:col-span-2 xl:col-span-4 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    {formProductionType === 'recipe-based'
+                      ? 'Create the sellable dish here. Recipe, ingredient costing, utility, labor, and final cost stay in Recipe & Costing. Active recipe based dishes still require a linked recipe before activation.'
+                      : formProductionType === 'purchased-ready'
+                        ? 'Link one finished purchase item only. Dish Master stores the sellable dish, while costing continues to come from the linked item and Recipe & Costing.'
+                        : 'Service items remain sellable master data only. Any commercial costing should stay outside Dish Master.'}
+                  </div>
+                </FormSection>
+
+                <section className="rounded border border-slate-200 bg-white">
+                  <div className={sectionTitleClass}>Recipe & Costing Status</div>
+                  <div className="grid grid-cols-2 gap-px bg-slate-200 lg:grid-cols-4">
+                    <div className="bg-white px-3 py-2 text-sm">
+                      <div className="text-xs text-slate-500">Recipe Status</div>
+                      <div className="mt-1">
+                        <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${formRecipeStatus.className}`}>
+                          {formRecipeStatus.label}
+                        </span>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-px bg-slate-200 md:col-span-2 md:grid-cols-5">
-                      <div className="bg-white px-3 py-2 text-sm">
-                        <div className="text-xs text-slate-500">Item Code</div>
-                        <div className="font-semibold text-slate-900">{selectedPurchaseItem?.itemCode || '-'}</div>
+                    <div className="bg-white px-3 py-2 text-sm">
+                      <div className="text-xs text-slate-500">{formProductionType === 'purchased-ready' ? 'Linked Purchase Item' : 'Cost Source'}</div>
+                      <div className="font-semibold text-slate-900">
+                        {formProductionType === 'purchased-ready'
+                          ? selectedPurchaseItem?.itemName || 'Link Pending'
+                          : formProductionType === 'recipe-based'
+                            ? selectedRecipe ? getRecipeName(selectedRecipe) : 'Create in Recipe & Costing'
+                            : 'Service Item'}
                       </div>
-                      <div className="bg-white px-3 py-2 text-sm">
-                        <div className="text-xs text-slate-500">Inventory Type</div>
-                        <div className="font-semibold text-slate-900">{formatInventoryTypeLabel(purchasedReadyInventoryType)}</div>
-                      </div>
-                      <div className="bg-white px-3 py-2 text-sm">
-                        <div className="text-xs text-slate-500">Issue Unit</div>
-                        <div className="font-semibold text-slate-900">{formatUnitLabel(purchasedReadyIssueUnit, units) || '-'}</div>
-                      </div>
-                      <div className="bg-white px-3 py-2 text-sm">
-                        <div className="text-xs text-slate-500">Unit Cost</div>
-                        <div className="font-semibold text-slate-900">{formatCurrencyPKR(purchasedReadyUnitCost)}</div>
-                      </div>
-                      <div className="bg-white px-3 py-2 text-sm">
-                        <div className="text-xs text-slate-500">Current Stock</div>
-                        <div className="font-semibold text-slate-900">
-                          {selectedPurchaseItem ? `${purchasedReadyCurrentStock} ${formatUnitLabel(purchasedReadyIssueUnit, units)}` : '-'}
+                      {formProductionType === 'purchased-ready' && selectedPurchaseItem ? (
+                        <div className="text-xs text-slate-500">
+                          {selectedPurchaseItem.itemCode || 'Auto Code'} | {formatInventoryTypeLabel(purchasedReadyInventoryType)}
                         </div>
-                      </div>
+                      ) : null}
                     </div>
-                  </FormSection>
-                ) : null}
+                    <div className="bg-white px-3 py-2 text-sm">
+                      <div className="text-xs text-slate-500">Latest Cost</div>
+                      <div className="font-semibold text-slate-900">{formHasLatestCost ? formatCurrencyPKR(formLatestCost) : '-'}</div>
+                    </div>
+                    <div className="bg-white px-3 py-2 text-sm">
+                      <div className="text-xs text-slate-500">Last Cost Update</div>
+                      <div className="font-semibold text-slate-900">{formatDateTime(formLastCostUpdateAt)}</div>
+                    </div>
+                  </div>
+                </section>
 
                 <section className="rounded border border-slate-200 bg-white">
                   <div className={sectionTitleClass}>Usage Availability</div>
@@ -1141,73 +1266,16 @@ export function BanquetDishMaster({
                   </div>
                 </section>
 
-                <FormSection title="Recipe Mapping">
-                  <div>
-                    <label className={labelClass}>Recipe {recipeRequiredForApproval ? <span className="text-red-500">*</span> : null}</label>
-                    <select
-                      value={formRecipeId}
-                      onChange={(event) => setFormRecipeId(event.target.value)}
-                      disabled={viewMode || !canSelectRecipe}
-                      className={inputClass}
-                    >
-                      <option value="">
-                        {formProductionType !== 'recipe-based'
-                          ? 'Recipe not required'
-                          : !editingDish
-                          ? 'Save dish before recipe setup'
-                          : canSelectRecipe
-                            ? 'No recipe linked'
-                            : 'No recipe created for this dish'}
-                      </option>
-                      {recipeOptions.map((recipe) => (
-                        <option key={recipe.id} value={recipe.id}>
-                          {getRecipeName(recipe)}{recipe.status === 'inactive' ? ' (Inactive)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex items-end">
-                    <div className="w-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                      {!editingDish
-                        ? 'Recipe costing starts after this dish is saved.'
-                        : formProductionType !== 'recipe-based'
-                          ? 'Recipe mapping is not required for this production type.'
-                          : canSelectRecipe
-                            ? 'Only recipes created for this dish are available here.'
-                            : 'Create the recipe from Recipe & Costing after saving the dish.'}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-px bg-slate-200 md:col-span-2 md:grid-cols-3">
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Recipe Yield</div>
-                      <div className="font-semibold text-slate-900">
-                        {selectedRecipe ? `${getRecipeYieldQuantity(selectedRecipe)} ${getRecipeYieldUnit(selectedRecipe)}` : '-'}
-                      </div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Recipe Cost</div>
-                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(recipeCost)}</div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Cost Per Yield Unit</div>
-                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(recipeCostPerYieldUnit)}</div>
-                    </div>
-                  </div>
-                </FormSection>
-
                 <section className="rounded border border-slate-200 bg-white">
                   <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-1.5">
                     <div>
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-700">Sales Variants</h3>
                       <div className="text-[11px] text-slate-500">
                         {formProductionType === 'recipe-based'
-                          ? `Recipe qty uses the linked recipe yield unit: ${recipeYieldUnit}.`
+                          ? 'Define how the dish can be sold. Production quantity is the quantity consumed for one sale and is used later by recipe planning.'
                           : formProductionType === 'purchased-ready'
-                            ? `Stock qty uses the linked purchase item issue unit: ${formatUnitLabel(purchasedReadyIssueUnit, units) || '-'}`
-                            : 'Service items use selling price only unless vendor costing is added later.'}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        Per Head cost is finalized in Menu/Package costing because it depends on the complete menu and portion planning.
+                            ? 'Define sellable units and the stock quantity consumed per sale from the linked finished purchase item.'
+                            : 'Define sellable units only. Service costing is not maintained from Dish Master.'}
                       </div>
                     </div>
                     {!viewMode ? (
@@ -1228,12 +1296,8 @@ export function BanquetDishMaster({
                           <th className={`${tableHeadClass} text-right`}>Sales Qty</th>
                           <th className={tableHeadClass}>Sales Unit</th>
                           <th className={`${tableHeadClass} text-right`}>
-                            {formProductionType === 'recipe-based' ? 'Recipe Qty' : formProductionType === 'purchased-ready' ? 'Stock Qty' : 'Base Qty'}
+                            {formProductionType === 'recipe-based' ? 'Production Qty' : formProductionType === 'purchased-ready' ? 'Stock Qty' : 'Fulfilment Qty'}
                           </th>
-                          <th className={tableHeadClass}>Cost Basis</th>
-                          <th className={`${tableHeadClass} text-right`}>Selling Price</th>
-                          <th className={`${tableHeadClass} text-right`}>Auto Cost</th>
-                          <th className={`${tableHeadClass} text-right`}>Margin</th>
                           <th className={tableHeadClass}>Default</th>
                           <th className={tableHeadClass}>Status</th>
                           <th className={`${tableHeadClass} text-right`}>Action</th>
@@ -1242,16 +1306,6 @@ export function BanquetDishMaster({
                       <tbody>
                         {formSalesVariants.map((variant) => {
                           const variantIsMenuBased = isMenuBasedSalesUnit(variant.salesUnit);
-                          const variantCostBasis = getVariantCostBasisLabel(formProductionType, variant);
-                          const variantCost =
-                            variantIsMenuBased
-                              ? 0
-                              : formProductionType === 'recipe-based'
-                              ? getVariantBaseQuantity(variant) * recipeCostPerYieldUnit
-                              : formProductionType === 'purchased-ready'
-                                ? getPurchasedReadyVariantCost(variant)
-                                : 0;
-                          const variantMargin = variantIsMenuBased ? 0 : (Number(variant.sellingPrice) || 0) - variantCost;
 
                           return (
                           <tr key={variant.id} className="border-t border-slate-200">
@@ -1299,34 +1353,10 @@ export function BanquetDishMaster({
                                   step="0.01"
                                   value={variant.portionBaseQuantity ?? variant.quantity}
                                   onChange={(event) => handleUpdateVariant(variant.id, { portionBaseQuantity: Number(event.target.value) })}
-                                  disabled={viewMode || (formProductionType === 'recipe-based' && !selectedRecipe)}
+                                  disabled={viewMode}
                                   className={`${inputClass} text-right`}
                                 />
                               )}
-                            </td>
-                            <td className={tableCellClass}>
-                              <span className="font-medium text-slate-700">{variantCostBasis}</span>
-                            </td>
-                            <td className={`${tableCellClass} text-right`}>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={variant.sellingPrice}
-                                onChange={(event) => handleUpdateVariant(variant.id, { sellingPrice: Number(event.target.value) })}
-                                disabled={viewMode}
-                                className={`${inputClass} text-right`}
-                              />
-                            </td>
-                            <td className={`${tableCellClass} text-right`}>
-                              <div className="font-semibold text-slate-900">
-                                {variantIsMenuBased ? 'Calculated at Menu Level' : formatCurrencyPKR(variantCost)}
-                              </div>
-                            </td>
-                            <td className={`${tableCellClass} text-right`}>
-                              <div className="font-semibold text-slate-900">
-                                {variantIsMenuBased ? 'Calculated at Menu Level' : formatCurrencyPKR(variantMargin)}
-                              </div>
                             </td>
                             <td className={tableCellClass}>
                               <input
@@ -1365,48 +1395,6 @@ export function BanquetDishMaster({
                         )})}
                       </tbody>
                     </table>
-                  </div>
-                </section>
-
-                <section className="rounded border border-slate-200 bg-white">
-                  <div className={sectionTitleClass}>Cost Preview</div>
-                  <div className="grid grid-cols-2 gap-px bg-slate-200 md:grid-cols-5">
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">
-                        {formProductionType === 'recipe-based' ? 'Recipe Cost' : formProductionType === 'purchased-ready' ? 'Purchase Unit Cost' : 'Cost Basis'}
-                      </div>
-                      <div className="font-semibold text-slate-900">
-                        {formatCurrencyPKR(
-                          formProductionType === 'recipe-based' ? recipeCost : formProductionType === 'purchased-ready' ? purchasedReadyUnitCost : 0,
-                        )}
-                      </div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Default Variant Cost</div>
-                      <div className="font-semibold text-slate-900">
-                        {defaultVariantIsMenuBased ? 'Calculated at Menu Level' : formatCurrencyPKR(defaultVariantCost)}
-                      </div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Default Selling Price</div>
-                      <div className="font-semibold text-slate-900">{formatCurrencyPKR(defaultSellingPrice)}</div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Food Cost %</div>
-                      <div className="font-semibold text-slate-900">
-                        {defaultVariantIsMenuBased
-                          ? 'Calculated at Menu Level'
-                          : Number.isFinite(foodCostPercentage)
-                            ? `${foodCostPercentage.toFixed(2)}%`
-                            : '0.00%'}
-                      </div>
-                    </div>
-                    <div className="bg-white px-3 py-2 text-sm">
-                      <div className="text-xs text-slate-500">Gross Margin</div>
-                      <div className="font-semibold text-slate-900">
-                        {defaultVariantIsMenuBased ? 'Calculated at Menu Level' : formatCurrencyPKR(grossMargin)}
-                      </div>
-                    </div>
                   </div>
                 </section>
 

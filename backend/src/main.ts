@@ -1,6 +1,7 @@
 import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
+import cookieParser from "cookie-parser";
 import { Server as HttpServer } from "http";
 import { AppModule } from "./app.module";
 import { RealtimeService } from "./modules/realtime/realtime.service";
@@ -16,24 +17,29 @@ async function bootstrap() {
   );
   const port = configService.get<number>("PORT", 3001);
   const host = configService.get<string>("HOST", "0.0.0.0");
+
+  // S-3: Only explicit origins from CORS_ORIGIN env var are allowed.
+  // The broad RFC-1918 wildcard regex has been removed — it opened any private-
+  // network host to credentialed CORS requests, which is unsafe in cloud VPCs.
   const allowedOrigins = corsOrigin
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
-  const localNetworkOriginPattern =
-    /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):(4173|5173)$/;
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || localNetworkOriginPattern.test(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
         return;
       }
-
       callback(new Error(`Origin ${origin} is not allowed by CORS`));
     },
     credentials: true,
   });
+
+  // S-1: Register cookie-parser so Passport/JWT strategy can read the HttpOnly cookie.
+  app.use(cookieParser());
+
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(
     new ValidationPipe({

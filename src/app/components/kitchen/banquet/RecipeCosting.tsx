@@ -1,7 +1,7 @@
 import { Fragment, type DragEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Copy, Edit2, Eye, FileText, GripVertical, Plus, Search, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { formatCurrencyPKR } from '../../../lib/locale';
+import { formatCurrencyPKR, formatDatePK } from '../../../lib/locale';
 import {
   calculateStandardRecipeMetrics,
   getRecipeStandardCostSnapshot,
@@ -244,7 +244,7 @@ const sortOptions: Array<{ value: RegisterSortKey; label: string }> = [
   { value: 'ingredient-cost', label: 'Ingredient Cost' },
   { value: 'total-cost', label: 'Total Recipe Cost' },
   { value: 'cost-per-unit', label: 'Cost Per Output Unit' },
-  { value: 'updated-at', label: 'Last Updated' },
+  { value: 'updated-at', label: 'Last Edit' },
 ];
 
 const preferredOutputInventoryTypes = new Set(['semi-finished-product', 'finished-product']);
@@ -889,6 +889,82 @@ const formatDisplayQuantity = (value: number) => {
 
   return (Math.round(value * 1000) / 1000).toFixed(3).replace(/\.?0+$/, '');
 };
+
+const trackedManualCostCategories = new Set<RecipeCostLineCategory>(['labor', 'utility', 'other']);
+
+const toTrackedNumber = (value: unknown) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const getTrackedIngredientEntries = (ingredients: RecipeIngredient[] = []) =>
+  [...ingredients]
+    .map((ingredient) => ({
+      itemId: ingredient.itemId || ingredient.purchaseItemId || '',
+      unit: ingredient.entryUnitId || ingredient.unit || ingredient.baseUnitId || '',
+      quantity: toTrackedNumber(ingredient.entryQuantity ?? ingredient.requiredQuantity ?? ingredient.quantity),
+    }))
+    .sort((left, right) =>
+      left.itemId.localeCompare(right.itemId) ||
+      left.unit.localeCompare(right.unit) ||
+      left.quantity - right.quantity,
+    );
+
+const getTrackedManualCostLineEntries = (lines: RecipeCostLine[] = []) =>
+  [...lines]
+    .filter((line) => trackedManualCostCategories.has(line.category))
+    .map((line) => ({
+      category: line.category,
+      name: String(line.name || '').trim(),
+      calculationBasis: line.calculationBasis,
+      calculationMethodId: line.calculationMethodId || '',
+      quantity: toTrackedNumber(line.quantity),
+      capacityQuantity: toTrackedNumber(line.capacityQuantity),
+      unit: line.unit || '',
+      ingredientReferenceId: line.ingredientReferenceId || '',
+      sortOrder: toTrackedNumber(line.sortOrder),
+    }))
+    .sort((left, right) =>
+      left.category.localeCompare(right.category) ||
+      left.name.localeCompare(right.name) ||
+      left.calculationBasis.localeCompare(right.calculationBasis) ||
+      left.calculationMethodId.localeCompare(right.calculationMethodId) ||
+      left.ingredientReferenceId.localeCompare(right.ingredientReferenceId) ||
+      left.unit.localeCompare(right.unit) ||
+      left.quantity - right.quantity ||
+      left.capacityQuantity - right.capacityQuantity ||
+      left.sortOrder - right.sortOrder,
+    );
+
+const buildRecipeManualEditSignature = ({
+  ingredients,
+  additionalCostLines,
+  utilityCostEnabled,
+  otherProductionCostEnabled,
+}: Pick<Recipe, 'ingredients' | 'additionalCostLines' | 'utilityCostEnabled' | 'otherProductionCostEnabled'>) =>
+  JSON.stringify({
+    ingredients: getTrackedIngredientEntries(ingredients),
+    additionalCostLines: getTrackedManualCostLineEntries(additionalCostLines),
+    utilityCostEnabled: Boolean(utilityCostEnabled),
+    otherProductionCostEnabled: Boolean(otherProductionCostEnabled),
+  });
+
+const hasRecipeManualEditChanged = (
+  currentRecipe: Recipe | undefined,
+  nextRecipe: Pick<Recipe, 'ingredients' | 'additionalCostLines' | 'utilityCostEnabled' | 'otherProductionCostEnabled'>,
+) => {
+  if (!currentRecipe) {
+    return true;
+  }
+
+  return buildRecipeManualEditSignature(currentRecipe) !== buildRecipeManualEditSignature(nextRecipe);
+};
+
+const getRecipeRegisterLastEditAt = (recipe?: Recipe, dish?: Dish) =>
+  recipe?.costingEditedAt || recipe?.updatedAt || dish?.updatedAt;
+
+const formatCountLabel = (count: number, singular: string, plural = `${singular}s`) =>
+  `${count} ${count === 1 ? singular : plural}`;
 
 const getRecipeIngredientStatus = (
   ingredient: RecipeIngredient,
@@ -1988,6 +2064,11 @@ export function RecipeCosting({
             productionType === 'recipe-based'
               ? (recipe?.ingredients || []).map((ingredient) => syncIngredientRow(ingredient, purchaseItems, units, 1))
               : [];
+          const ingredientLineCount = recipeValidationIngredients.length;
+          const laborLineCount = (recipe?.additionalCostLines || []).filter((line) => line.category === 'labor').length;
+          const utilityLineCount = (recipe?.additionalCostLines || []).filter((line) => line.category === 'utility').length;
+          const packagingLineCount = (recipe?.additionalCostLines || []).filter((line) => line.category === 'packaging').length;
+          const otherProductionLineCount = (recipe?.additionalCostLines || []).filter((line) => line.category === 'other').length;
           const missingYield =
             productionType === 'recipe-based' &&
             recipeState !== 'missing-recipe' &&
@@ -2081,6 +2162,11 @@ export function RecipeCosting({
             sellingPricePerOutputUnit,
             costingStatus,
             costUnit,
+            ingredientLineCount,
+            laborLineCount,
+            utilityLineCount,
+            packagingLineCount,
+            otherProductionLineCount,
             missingIngredientCost,
             missingPurchaseRate,
             missingLabor,
@@ -2091,7 +2177,7 @@ export function RecipeCosting({
             missingCategory,
             missingKitchenSection,
             missingCostLink,
-            lastUpdatedAt: recipe?.updatedAt || dish.updatedAt,
+            lastUpdatedAt: getRecipeRegisterLastEditAt(recipe, dish),
             statusSeverity:
               costingStatus === 'missing-recipe'
                   ? 5
@@ -3258,6 +3344,15 @@ export function RecipeCosting({
       ),
     );
     const computedMarginPerYieldUnit = standardMetrics.marginPerYieldUnit;
+    const costingEditedAt =
+      !existingRecipe || hasRecipeManualEditChanged(existingRecipe, {
+        ingredients: normalizedIngredients,
+        additionalCostLines: normalizedCostLines,
+        utilityCostEnabled,
+        otherProductionCostEnabled,
+      })
+        ? now
+        : existingRecipe.costingEditedAt || existingRecipe.updatedAt || now;
 
     const recipeData: Recipe = {
       id: existingRecipe?.id || `recipe-${Date.now()}`,
@@ -3303,6 +3398,7 @@ export function RecipeCosting({
       pricingEvaluationValue: evaluationValue,
       suggestedSellingPrice: resolvedSellingPricePerYieldUnit,
       foodCostPercentage,
+      costingEditedAt,
       createdBy: existingRecipe?.createdBy || userName,
       createdAt: existingRecipe?.createdAt || now,
       updatedAt: now,
@@ -3669,7 +3765,7 @@ export function RecipeCosting({
             <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-packaging' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingPackagingCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Packaging {registerMetrics.missingPackagingCount}</button>
             <button type="button" onClick={() => applyRegisterFilterPreset({ missingConfigFilter: 'missing-purchase-rate' })} className={`inline-flex h-6 items-center rounded border px-2 font-semibold ${registerMetrics.missingPurchaseRateCount > 0 ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-white text-slate-900'}`}>Purchase Rate {registerMetrics.missingPurchaseRateCount}</button>
             <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2">Avg / Unit {formatCurrencyPKR(registerMetrics.averageCostPerUnit)}</span>
-            <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2">Updated 7d {registerMetrics.recentlyUpdatedCount}</span>
+            <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-white px-2">Edited 7d {registerMetrics.recentlyUpdatedCount}</span>
           </div>
         </div>
 
@@ -3726,6 +3822,7 @@ export function RecipeCosting({
                 </thead>
                 <tbody>
                   {filteredRows.map((row) => {
+                    const displayRecipeName = getRecipeName(row.dish, row.recipe);
                     const standardYieldText = row.standardYieldQuantity > 0
                       ? `${row.standardYieldQuantity} ${row.standardYieldUnit || row.costUnit}`
                       : '-';
@@ -3739,8 +3836,11 @@ export function RecipeCosting({
                       <Fragment key={row.id}>
                         <tr className="cursor-pointer border-t border-slate-200 hover:bg-slate-50" onClick={() => toggleExpandedRow(row.id)}>
                           <td className={tableCellClass}>
-                            <div className="font-medium text-slate-900">{row.dish.dishName}</div>
+                            <div className="font-medium text-slate-900">{displayRecipeName}</div>
                             <div className="text-[11px] text-slate-500">{row.recipeCode}</div>
+                            <div className="text-[11px] text-slate-500">
+                              Last edit {row.lastUpdatedAt ? formatDatePK(row.lastUpdatedAt) : '-'}
+                            </div>
                             <div className="mt-0.5 flex flex-wrap items-center gap-1">
                               <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${getRecipeStateBadgeClass(row.recipeState)}`}>
                                 {getRecipeStateLabel(row.recipeState)}
@@ -3863,23 +3963,38 @@ export function RecipeCosting({
                             <td className="px-3 py-3" colSpan={12}>
                               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Ingredient Cost</div>
+                                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                                    <span>Ingredient Cost</span>
+                                    <span>{formatCountLabel(row.ingredientLineCount, 'ingredient')}</span>
+                                  </div>
                                   <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.ingredientCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Labor Cost</div>
+                                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                                    <span>Labor Cost</span>
+                                    <span>{formatCountLabel(row.laborLineCount, 'line')}</span>
+                                  </div>
                                   <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.laborCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Utility Cost</div>
+                                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                                    <span>Utility Cost</span>
+                                    <span>{formatCountLabel(row.utilityLineCount, 'line')}</span>
+                                  </div>
                                   <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.utilityCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Packaging / Consumable Cost</div>
+                                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                                    <span>Packaging / Consumable Cost</span>
+                                    <span>{formatCountLabel(row.packagingLineCount, 'line')}</span>
+                                  </div>
                                   <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.packagingCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">
-                                  <div className="text-xs text-slate-500">Other Production Cost</div>
+                                  <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                                    <span>Other Production Cost</span>
+                                    <span>{formatCountLabel(row.otherProductionLineCount, 'line')}</span>
+                                  </div>
                                   <div className="font-semibold text-slate-900">{formatCurrencyPKR(row.otherProductionCost)}</div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm">

@@ -376,16 +376,18 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
-    const storedSession = authStorage.load();
+    // S-1: Token is now in an HttpOnly cookie — only the user profile is in localStorage.
+    const storedUser = authStorage.loadUser();
 
-    if (!storedSession) {
+    if (!storedUser) {
       setAuthReady(true);
       return () => {
         isMounted = false;
       };
     }
 
-    setSession(storedSession);
+    // Build a minimal session — accessToken is empty because it lives in the cookie.
+    setSession({ accessToken: "", user: storedUser });
     setAuthReady(true);
 
     void authApi.me()

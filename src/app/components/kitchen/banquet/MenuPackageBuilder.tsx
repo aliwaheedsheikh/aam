@@ -28,6 +28,13 @@ interface MenuPackageBuilderProps {
   units: UnitMaster[];
   onMenuPackagesChange: (packages: MenuPackage[]) => void;
   onMenuPackageTypesChange: (types: MenuPackageTypeMaster[]) => void;
+  openPackageRequest?: {
+    packageId: string;
+    tab: BuilderTab;
+    requestKey: number;
+    viewMode?: boolean;
+  } | null;
+  onOpenPackageRequestHandled?: (requestKey: number) => void;
 }
 
 const LEGACY_PACKAGE_COMPATIBLE_UNITS = new Set(['per-head', 'per-guest', 'per-portion', 'per-plate']);
@@ -147,22 +154,23 @@ type QuantitySuggestion = {
 };
 
 const PACKAGE_CATEGORY_REQUIREMENTS: PackageCategoryRequirement[] = [
-  { id: 'main-course', label: 'Main course', keywords: ['main course', 'main-course', 'curry', 'qorma', 'karahi'] },
-  { id: 'rice', label: 'Rice / biryani', keywords: ['rice', 'biryani', 'pulao'] },
-  { id: 'bread', label: 'Bread / naan', keywords: ['bread', 'naan', 'roti'] },
-  { id: 'dessert', label: 'Dessert / sweets', keywords: ['dessert', 'sweet', 'mithai'], preferChoiceGroup: true, groupName: 'Dessert Choice' },
-  { id: 'salad', label: 'Salad / raita', keywords: ['salad', 'raita', 'condiment'], preferChoiceGroup: true, groupName: 'Salad Choice' },
-  { id: 'beverage', label: 'Beverage', keywords: ['beverage', 'drink', 'juice', 'tea'], preferChoiceGroup: true, groupName: 'Beverage Choice' },
+  { id: 'main-course', label: 'Main Course', keywords: ['main course', 'main-course', 'curry', 'qorma', 'karahi', 'handi', 'bbq'] },
+  { id: 'rice-biryani', label: 'Rice/Biryani', keywords: ['rice', 'biryani', 'pulao'] },
+  { id: 'naan', label: 'Naan', keywords: ['naan', 'roti', 'bread', 'chapati', 'kulcha'] },
+  { id: 'salad-raita', label: 'Salad/Raita', keywords: ['salad', 'raita'] },
+  { id: 'dessert-sweets', label: 'Dessert/Sweets', keywords: ['dessert', 'sweet', 'sweets', 'mithai', 'kheer', 'halwa'] },
+  { id: 'beverages', label: 'Beverages', keywords: ['beverage', 'beverages', 'drink', 'juice', 'tea', 'coffee', 'soft drink'] },
+  { id: 'add-ons', label: 'Add-ons', keywords: ['add-on', 'add on', 'addon', 'condiment', 'chutney', 'pickle', 'sauce', 'extra'] },
 ];
 
 const SELECTED_MENU_CATEGORY_META = [
   { id: 'main-course', label: 'Main Course' },
-  { id: 'rice', label: 'Rice/Biryani' },
-  { id: 'bread', label: 'Bread/Naan' },
-  { id: 'salad', label: 'Salad' },
-  { id: 'dessert', label: 'Dessert' },
-  { id: 'beverage', label: 'Beverage' },
-  { id: 'other', label: 'Other' },
+  { id: 'rice-biryani', label: 'Rice/Biryani' },
+  { id: 'naan', label: 'Naan' },
+  { id: 'salad-raita', label: 'Salad/Raita' },
+  { id: 'dessert-sweets', label: 'Dessert/Sweets' },
+  { id: 'beverages', label: 'Beverages' },
+  { id: 'add-ons', label: 'Add-ons' },
 ] as const;
 
 type SelectedMenuCategoryId = (typeof SELECTED_MENU_CATEGORY_META)[number]['id'];
@@ -178,6 +186,23 @@ const getSelectedMenuCategoryMeta = (value?: string): (typeof SELECTED_MENU_CATE
   return (
     SELECTED_MENU_CATEGORY_META.find((category) => category.id === matchedRequirement?.id) ||
     SELECTED_MENU_CATEGORY_META.find((category) => category.id === 'other')!
+  );
+};
+
+const compareDishesBySelectedMenuCategory = (left: Dish, right: Dish) => {
+  const leftCategory = getSelectedMenuCategoryMeta(
+    `${left.dishName} ${left.category || ''} ${left.cuisineName || ''} ${left.preparationArea || ''}`,
+  );
+  const rightCategory = getSelectedMenuCategoryMeta(
+    `${right.dishName} ${right.category || ''} ${right.cuisineName || ''} ${right.preparationArea || ''}`,
+  );
+  const leftIndex = SELECTED_MENU_CATEGORY_META.findIndex((category) => category.id === leftCategory.id);
+  const rightIndex = SELECTED_MENU_CATEGORY_META.findIndex((category) => category.id === rightCategory.id);
+
+  return (
+    leftIndex - rightIndex ||
+    (left.category || '').localeCompare(right.category || '') ||
+    left.dishName.localeCompare(right.dishName)
   );
 };
 
@@ -985,6 +1010,8 @@ export function MenuPackageBuilder({
   units,
   onMenuPackagesChange,
   onMenuPackageTypesChange,
+  openPackageRequest,
+  onOpenPackageRequestHandled,
 }: MenuPackageBuilderProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -1225,18 +1252,33 @@ export function MenuPackageBuilder({
   };
   const filteredAvailableDishes = useMemo(
     () =>
-      packageEligibleDishes.filter((dish) => {
-        const matchesSearch =
-          !itemSearchTerm.trim() ||
-          dish.dishName.toLowerCase().includes(itemSearchTerm.toLowerCase()) ||
-          dish.category.toLowerCase().includes(itemSearchTerm.toLowerCase()) ||
-          dish.preparationArea.toLowerCase().includes(itemSearchTerm.toLowerCase());
-        const matchesCategory = categoryFilter === 'all' || dish.category === categoryFilter;
-        const matchesCuisine = cuisineFilter === 'all' || dish.cuisineName === cuisineFilter;
-        const matchesPreparationArea = preparationAreaFilter === 'all' || dish.preparationArea === preparationAreaFilter;
-        return matchesSearch && matchesCategory && matchesCuisine && matchesPreparationArea;
-      }),
+      [...packageEligibleDishes]
+        .filter((dish) => {
+          const matchesSearch =
+            !itemSearchTerm.trim() ||
+            dish.dishName.toLowerCase().includes(itemSearchTerm.toLowerCase()) ||
+            dish.category.toLowerCase().includes(itemSearchTerm.toLowerCase()) ||
+            dish.preparationArea.toLowerCase().includes(itemSearchTerm.toLowerCase());
+          const matchesCategory = categoryFilter === 'all' || dish.category === categoryFilter;
+          const matchesCuisine = cuisineFilter === 'all' || dish.cuisineName === cuisineFilter;
+          const matchesPreparationArea = preparationAreaFilter === 'all' || dish.preparationArea === preparationAreaFilter;
+          return matchesSearch && matchesCategory && matchesCuisine && matchesPreparationArea;
+        })
+        .sort(compareDishesBySelectedMenuCategory),
     [packageEligibleDishes, itemSearchTerm, categoryFilter, cuisineFilter, preparationAreaFilter],
+  );
+  const groupedAvailableDishSections = useMemo(
+    () =>
+      SELECTED_MENU_CATEGORY_META.map((category) => ({
+        ...category,
+        rows: filteredAvailableDishes.filter((dish) => {
+          const categoryMeta = getSelectedMenuCategoryMeta(
+            `${dish.dishName} ${dish.category || ''} ${dish.cuisineName || ''} ${dish.preparationArea || ''}`,
+          );
+          return categoryMeta.id === category.id;
+        }),
+      })).filter((section) => section.rows.length > 0),
+    [filteredAvailableDishes],
   );
 
   const resetMenuItemFilters = () => {
@@ -1376,11 +1418,11 @@ export function MenuPackageBuilder({
 
   const getDishAssignmentLabel = (dishId: string) => {
     if (packageDishes.some((dish) => dish.dishId === dishId)) {
-      return 'Fixed Item';
+      return 'Selected';
     }
 
     const assignedGroup = getChoiceGroupAssignment(dishId);
-    return assignedGroup ? assignedGroup.groupName : null;
+    return assignedGroup ? 'Selected' : null;
   };
   const activeChoiceGroup = choiceGroups.find((choiceGroup) => choiceGroup.id === activeChoiceGroupId) || null;
   const eligibleDishById = useMemo(
@@ -1452,16 +1494,21 @@ export function MenuPackageBuilder({
     setDialogOpen(true);
   };
 
-  const openPackage = (pkg: MenuPackage, nextViewMode: boolean) => {
+  const openPackage = (
+    pkg: MenuPackage,
+    nextViewMode: boolean,
+    targetTab: BuilderTab = 'menu-items',
+  ) => {
     const baselineGuests = pkg.minimumGuests || 100;
     const hydratedDishes = pkg.dishes.map((dish) => hydratePackageDish(dish, pkg.menuEstimate, baselineGuests));
     const hydratedChoiceGroups = (pkg.choiceGroups || []).map((choiceGroup) =>
       hydrateChoiceGroup(choiceGroup, pkg.menuEstimate, baselineGuests),
     );
+    const flattenedChoiceGroupDishes = hydratedChoiceGroups.flatMap((choiceGroup) => choiceGroup.dishes);
     const hydratedMenuEstimate = buildMenuEstimate(
       pkg.menuEstimate ?? pkg.chefEstimate,
-      hydratedDishes,
-      hydratedChoiceGroups,
+      [...hydratedDishes, ...flattenedChoiceGroupDishes],
+      [],
       pkg.minimumGuests || 100,
       userName,
       units,
@@ -1475,13 +1522,13 @@ export function MenuPackageBuilder({
     setFormBaselineGuests(baselineGuests);
     setFormSellingPricePerGuest(pkg.sellingPricePerHead || 0);
     setFormStatus(pkg.status);
-    setPackageDishes(hydratedDishes);
-    setChoiceGroups(hydratedChoiceGroups);
-    setActiveChoiceGroupId(hydratedChoiceGroups[0]?.id || null);
+    setPackageDishes([...hydratedDishes, ...flattenedChoiceGroupDishes]);
+    setChoiceGroups([]);
+    setActiveChoiceGroupId(null);
     setPendingAddDishIds([]);
     setPendingAddChoiceGroupId('');
     setSelectedAvailableDishIds([]);
-    setActiveBuilderTab('menu-items');
+    setActiveBuilderTab(targetTab);
     setFixedItemsOpen(true);
     setChoiceGroupsOpen(true);
     setChoiceGroupEditorOpen(false);
@@ -1490,6 +1537,23 @@ export function MenuPackageBuilder({
     setViewMode(nextViewMode);
     setDialogOpen(true);
   };
+
+  useEffect(() => {
+    if (!openPackageRequest) {
+      return;
+    }
+
+    const packageToOpen = banquetPackages.find((pkg) => pkg.id === openPackageRequest.packageId);
+    if (packageToOpen) {
+      openPackage(
+        packageToOpen,
+        Boolean(openPackageRequest.viewMode),
+        openPackageRequest.tab || 'menu-items',
+      );
+    }
+
+    onOpenPackageRequestHandled?.(openPackageRequest.requestKey);
+  }, [banquetPackages, onOpenPackageRequestHandled, openPackageRequest]);
 
   useEffect(() => {
     if (!dialogOpen) {
@@ -1829,50 +1893,14 @@ export function MenuPackageBuilder({
     }
 
     const nextFixedDishes = [...packageDishes];
-    const nextChoiceGroups = [...choiceGroups];
     const nextAssignedDishIds = new Set(assignedDishIds);
     let addedLines = 0;
-    let firstCreatedGroupId: string | null = null;
 
     suggestedCategoryGaps.slice(0, 4).forEach(({ requirement, candidates }) => {
       const unassignedCandidates = candidates.filter(
         (dish) => !nextAssignedDishIds.has(dish.id) && getDishPackageReadiness(dish, recipeByDishId, purchaseItemsById).canAdd,
       );
       if (unassignedCandidates.length === 0) {
-        return;
-      }
-
-      if (requirement.preferChoiceGroup && unassignedCandidates.length >= 2) {
-        const existingGroup = nextChoiceGroups.find((choiceGroup) =>
-          normalizeComparableText(choiceGroup.groupName).includes(normalizeComparableText(requirement.groupName || requirement.label)),
-        );
-        if (existingGroup) {
-          return;
-        }
-
-        const groupDishes = unassignedCandidates
-          .slice(0, 3)
-          .map((dish) => {
-            const defaultVariant = getDefaultPackageVariant(dish, units, recipeByDishId, purchaseItemsById);
-            return defaultVariant ? buildPackageDish(dish, defaultVariant) : null;
-          })
-          .filter((dish): dish is MenuPackageDish => Boolean(dish));
-
-        if (groupDishes.length === 0) {
-          return;
-        }
-
-        const nextGroup: MenuPackageChoiceGroup = {
-          ...createChoiceGroup(nextChoiceGroups.length + 1),
-          groupName: requirement.groupName || `${requirement.label} Choice`,
-          dishes: groupDishes,
-          defaultDishId: groupDishes[0]?.dishId,
-        };
-
-        nextChoiceGroups.push(nextGroup);
-        firstCreatedGroupId = firstCreatedGroupId || nextGroup.id;
-        groupDishes.forEach((dish) => nextAssignedDishIds.add(dish.dishId));
-        addedLines += groupDishes.length;
         return;
       }
 
@@ -1893,10 +1921,6 @@ export function MenuPackageBuilder({
     }
 
     setPackageDishes(nextFixedDishes);
-    setChoiceGroups(nextChoiceGroups);
-    if (firstCreatedGroupId) {
-      setActiveChoiceGroupId(firstCreatedGroupId);
-    }
     toast.success(`${addedLines} menu line${addedLines === 1 ? '' : 's'} added from package suggestions`);
   };
 
@@ -2289,8 +2313,8 @@ export function MenuPackageBuilder({
       issues.push('Baseline guest count must be greater than 0.');
     }
 
-    if (packageDishes.length === 0 && choiceGroups.length === 0) {
-      issues.push('Add at least one fixed item or one choice group.');
+    if (packageDishes.length === 0) {
+      issues.push('Add at least one dish to the fixed menu.');
     }
 
     if (packageDishes.some((dish) => !dish.variantId || dish.quantityPerHead <= 0)) {
@@ -2313,69 +2337,8 @@ export function MenuPackageBuilder({
 
     });
 
-    choiceGroups.forEach((choiceGroup) => {
-      if (!choiceGroup.groupName.trim()) {
-        issues.push('Every choice group needs a name.');
-      }
-
-      if (choiceGroup.dishes.length === 0) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" needs at least one dish.`);
-      }
-
-      if (choiceGroup.minSelect <= 0) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" must allow at least one minimum selection.`);
-      }
-
-      if (choiceGroup.maxSelect < choiceGroup.minSelect) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" cannot have max select below min select.`);
-      }
-
-      if (choiceGroup.maxSelect > choiceGroup.dishes.length && choiceGroup.dishes.length > 0) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" cannot select more dishes than available options.`);
-      }
-
-      if (
-        choiceGroup.costingMethod === 'default-option' &&
-        (!choiceGroup.defaultDishId || !choiceGroup.dishes.some((dish) => dish.dishId === choiceGroup.defaultDishId))
-      ) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" needs a valid default option.`);
-      }
-
-      if (choiceGroup.dishes.some((dish) => !dish.variantId || dish.quantityPerHead <= 0)) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has a dish with missing variant or qty/head.`);
-      }
-
-      choiceGroup.dishes.forEach((dish) => {
-        const readiness = getDishPackageReadiness(dishes.find((item) => item.id === dish.dishId), recipeByDishId, purchaseItemsById);
-        if (!readiness.canAdd) {
-          issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has "${dish.dishName}": ${readiness.reason}`);
-        }
-      });
-
-      const selectedUnit = getMenuEstimateChoiceUnit(choiceGroup);
-      const rateUnit = getMenuEstimateChoiceRateUnit(choiceGroup);
-      if (convertMenuEstimateQuantityToRateUnit(1, selectedUnit, rateUnit) === null) {
-        issues.push(
-          `UOM ${formatUnitLabel(selectedUnit, units)} cannot convert to ${formatUnitLabel(rateUnit, units)} for choice group "${choiceGroup.groupName || 'Unnamed'}".`,
-        );
-      }
-
-      if (
-        choiceGroup.required &&
-        choiceGroup.costingMethod === 'default-option' &&
-        !choiceGroup.dishes.some((dish) => dish.dishId === getMenuEstimateChoiceSelection(choiceGroup))
-      ) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" needs a valid costing basis.`);
-      }
-
-    });
-
     if (Object.values(menuEstimate.fixedItemQuantities).some((quantity) => quantity < 0)) {
       issues.push('Estimated quantity cannot be negative for fixed items.');
-    }
-
-    if (Object.values(menuEstimate.choiceGroupQuantities).some((quantity) => quantity < 0)) {
-      issues.push('Estimated quantity cannot be negative for choice groups.');
     }
 
     const duplicate = menuPackages.find(
@@ -2391,7 +2354,6 @@ export function MenuPackageBuilder({
 
     return Array.from(new Set(issues));
   }, [
-    choiceGroups,
     dishes,
     editingPackage?.id,
     formBaselineGuests,
@@ -2418,19 +2380,7 @@ export function MenuPackageBuilder({
       }
     });
 
-    choiceGroups.forEach((choiceGroup) => {
-      if (
-        getChoiceGroupMenuEstimateUnitCost(choiceGroup, getMenuEstimateChoiceSelection(choiceGroup), units, recipeByDishId) <= 0
-      ) {
-        issues.push(`Recipe cost missing: ${choiceGroup.groupName || 'Unnamed'}.`);
-      }
-
-      if (choiceGroup.required && getMenuEstimateChoiceQuantity(choiceGroup) === 0) {
-        issues.push(`Choice group "${choiceGroup.groupName || 'Unnamed'}" has zero estimated quantity.`);
-      }
-    });
-
-    const dessertRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) => requirement.id === 'dessert');
+    const dessertRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) => requirement.id === 'dessert-sweets');
     const hasDessertEstimate =
       !dessertRequirement ||
       packageDishLines.some((dish) => packageDishMatchesRequirement(dish, eligibleDishById, dessertRequirement));
@@ -2494,34 +2444,14 @@ export function MenuPackageBuilder({
     }
 
     const normalizedPackageDishes = normalizePackageDishes(packageDishes);
-    const normalizedChoiceGroups = choiceGroups.map((choiceGroup) => {
-      const normalizedDishes = normalizePackageDishes(choiceGroup.dishes);
-      const normalizedDefaultDishId = normalizedDishes.some((dish) => dish.dishId === choiceGroup.defaultDishId)
-        ? choiceGroup.defaultDishId
-        : normalizedDishes[0]?.dishId;
-
-      return {
-        ...choiceGroup,
-        dishes: normalizedDishes,
-        defaultDishId: normalizedDefaultDishId,
-      };
-    });
+    const normalizedChoiceGroups: MenuPackageChoiceGroup[] = [];
 
     if (normalizedPackageDishes.some((packageDish) => !packageDish.variantId)) {
       toast.error('Please select a valid variant for each fixed dish');
       return;
     }
 
-    if (
-      normalizedChoiceGroups.some((choiceGroup) =>
-        choiceGroup.dishes.some((choiceDish) => !choiceDish.variantId),
-      )
-    ) {
-      toast.error('Please select a valid variant for each choice-group dish');
-      return;
-    }
-
-    const notReadyLine = [...normalizedPackageDishes, ...normalizedChoiceGroups.flatMap((choiceGroup) => choiceGroup.dishes)]
+    const notReadyLine = normalizedPackageDishes
       .map((packageDish) => ({
         packageDish,
         readiness: getDishPackageReadiness(dishes.find((dish) => dish.id === packageDish.dishId), recipeByDishId, purchaseItemsById),
@@ -2544,8 +2474,7 @@ export function MenuPackageBuilder({
     );
 
     if (
-      Object.values(normalizedMenuEstimate.fixedItemQuantities).some((quantity) => quantity < 0) ||
-      Object.values(normalizedMenuEstimate.choiceGroupQuantities).some((quantity) => quantity < 0)
+      Object.values(normalizedMenuEstimate.fixedItemQuantities).some((quantity) => quantity < 0)
     ) {
       toast.error('Menu estimate cannot contain negative quantities');
       return;
@@ -2560,26 +2489,6 @@ export function MenuPackageBuilder({
 
       return convertPackageEstimateQuantity(quantity, selectedUnit, rateUnit, units);
     };
-    const getSavedChoiceSelection = (choiceGroup: MenuPackageChoiceGroup) => {
-      if (choiceGroup.costingMethod === 'default-option' && choiceGroup.defaultDishId) {
-        return choiceGroup.defaultDishId;
-      }
-
-      const storedSelection = normalizedMenuEstimate.choiceGroupSelections?.[choiceGroup.id];
-      if (storedSelection && choiceGroup.dishes.some((dish) => dish.dishId === storedSelection)) {
-        return storedSelection;
-      }
-
-      return getChoiceGroupDefaultSelectionId(choiceGroup) || '';
-    };
-    const getSavedChoiceRateUnit = (choiceGroup: MenuPackageChoiceGroup) => {
-      const representativeDish =
-        choiceGroup.dishes.find((dish) => dish.dishId === getSavedChoiceSelection(choiceGroup)) ||
-        getChoiceGroupDefaultDish(choiceGroup);
-
-      return representativeDish ? getPackageDishEstimateUnit(representativeDish, units, recipeByDishId) : 'pcs';
-    };
-
     let invalidSavedUnitLine = '';
     const fixedItemsTotalCost = normalizedPackageDishes.reduce((sum, dish) => {
       const selectedUnit =
@@ -2600,35 +2509,12 @@ export function MenuPackageBuilder({
 
       return sum + getPackageDishEstimateCostPerUnit(dish, units, recipeByDishId) * quantityInRateUnit;
     }, 0);
-    const choiceGroupsTotalCost = normalizedChoiceGroups.reduce((sum, choiceGroup) => {
-      const selectedUnit =
-        getEstimateUnitCode(normalizedMenuEstimate.choiceGroupUnits?.[choiceGroup.id], units) ||
-        getSavedChoiceRateUnit(choiceGroup);
-      const rateUnit = getSavedChoiceRateUnit(choiceGroup);
-      const quantityInRateUnit = convertSavedEstimateQuantity(
-        normalizedMenuEstimate.choiceGroupQuantities[choiceGroup.id] ??
-          getChoiceGroupDefaultEstimateQuantityPerHead(choiceGroup, units, recipeByDishId) * Math.max(formBaselineGuests, 1),
-        selectedUnit,
-        rateUnit,
-      );
-
-      if (quantityInRateUnit === null) {
-        invalidSavedUnitLine = invalidSavedUnitLine || choiceGroup.groupName || 'Unnamed choice group';
-        return sum;
-      }
-
-      return (
-        sum +
-        getChoiceGroupMenuEstimateUnitCost(choiceGroup, getSavedChoiceSelection(choiceGroup), units, recipeByDishId) *
-          quantityInRateUnit
-      );
-    }, 0);
     if (invalidSavedUnitLine) {
       toast.error(`Selected UOM cannot convert for ${invalidSavedUnitLine}`);
       return;
     }
 
-    const totalCostPerHead = (fixedItemsTotalCost + choiceGroupsTotalCost) / Math.max(formBaselineGuests, 1);
+    const totalCostPerHead = fixedItemsTotalCost / Math.max(formBaselineGuests, 1);
     const totalSellingPerHead = Math.max(Number(formSellingPricePerGuest) || 0, 0);
     const normalizedCommercialPricing: MenuPackageCommercialPricing = {
       fixedItemSellingPrices: {},
@@ -2897,22 +2783,13 @@ export function MenuPackageBuilder({
           : 'Selling pending',
     },
     {
-      label: 'Choice Groups Costed',
-      passed:
-        choiceGroups.length === 0 ||
-        choiceGroups.every(
-          (choiceGroup) =>
-            choiceGroup.dishes.length > 0 &&
-            getChoiceGroupMenuEstimateUnitCost(choiceGroup, getMenuEstimateChoiceSelection(choiceGroup), units, recipeByDishId) > 0,
-        ),
-      detail:
-        choiceGroups.length === 0
-          ? 'No choice groups'
-          : `${choiceGroups.filter((choiceGroup) => getChoiceGroupMenuEstimateUnitCost(choiceGroup, getMenuEstimateChoiceSelection(choiceGroup), units, recipeByDishId) > 0).length}/${choiceGroups.length} costed`,
+      label: 'Fixed Menu Ready',
+      passed: packageDishes.length > 0,
+      detail: packageDishes.length > 0 ? `${packageDishes.length} dishes selected` : 'No dishes selected',
     },
   ];
   const mainCourseRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) => requirement.id === 'main-course');
-  const dessertRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) => requirement.id === 'dessert');
+  const dessertRequirement = PACKAGE_CATEGORY_REQUIREMENTS.find((requirement) => requirement.id === 'dessert-sweets');
   const mainCourseLineCount = mainCourseRequirement
     ? packageDishLines.filter((dish) => packageDishMatchesRequirement(dish, eligibleDishById, mainCourseRequirement)).length
     : 0;
@@ -3048,7 +2925,7 @@ export function MenuPackageBuilder({
       : hasMenuIncompleteIssue
         ? {
             label: 'Menu Incomplete',
-            detail: 'Complete required categories and choice groups before sale.',
+            detail: 'Complete required fixed-menu categories before sale.',
             className: 'border-amber-200 bg-amber-50 text-amber-800',
           }
         : hasCostingReviewIssue || validationErrors.length > 0
@@ -3063,7 +2940,6 @@ export function MenuPackageBuilder({
           className: 'border-green-200 bg-green-50 text-green-800',
         };
   const packageCommercialStatus = getPackageCommercialStatus(menuEstimateCostPerHead, packageSellingPerHead);
-  const baselineGuestDivisor = Math.max(formBaselineGuests, 1);
   const selectedMenuRows = [
     ...packageDishes.map((dish, index) => {
       const sourceDish = dishes.find((item) => item.id === dish.dishId);
@@ -3084,65 +2960,15 @@ export function MenuPackageBuilder({
         categoryId: categoryMeta.id as SelectedMenuCategoryId,
         categoryLabel: categoryMeta.label,
         itemName: dish.dishName,
-        itemType: 'Fixed Item',
+        itemDetail: `${sourceDish?.category || 'Uncategorized'} | ${dish.variantLabel || dish.unit || 'Default'} | ${dish.preparationArea.replace(/-/g, ' ')}`,
         quantityPerGuest: dish.quantityPerHead,
         unit: dish.unit,
         costPerGuest,
         readiness,
         statusLabel: commercialStatus.label,
         statusClassName: commercialStatus.className,
-        onEdit: () => setFixedItemsOpen(true),
+        onQuantityChange: (value: number) => handleUpdateDish(index, 'quantityPerHead', value),
         onRemove: () => handleRemoveDish(index),
-      };
-    }),
-    ...choiceGroups.map((choiceGroup) => {
-      const representativeDish = getChoiceGroupMenuEstimateRepresentativeDish(choiceGroup);
-      const readiness =
-        choiceGroup.dishes.length === 0
-          ? ({
-              status: 'recipe-incomplete',
-              label: DISH_READINESS_LABELS['recipe-incomplete'],
-              canAdd: false,
-              reason: 'Choice group must contain at least one ready dish.',
-            } as DishPackageReadiness)
-          : choiceGroup.dishes.map((dish) => getDishReadiness(dish.dishId)).find((item) => !item.canAdd) ||
-            ({
-              status: 'ready',
-              label: DISH_READINESS_LABELS.ready,
-              canAdd: true,
-              reason: 'All choice-group dishes are complete and costed.',
-            } as DishPackageReadiness);
-      const unitCost = getChoiceGroupMenuEstimateUnitCost(
-        choiceGroup,
-        getMenuEstimateChoiceSelection(choiceGroup),
-        units,
-        recipeByDishId,
-      );
-      const costPerGuest = calculateChoiceGroupMenuEstimateCostPerHead(choiceGroup);
-      const commercialStatus = !readiness.canAdd
-        ? { label: readiness.label, className: 'border-red-200 bg-red-50 text-red-700' }
-        : unitCost <= 0
-          ? { label: 'Missing Cost', className: 'border-amber-200 bg-amber-50 text-amber-700' }
-          : { label: 'Ready', className: 'border-green-200 bg-green-50 text-green-700' };
-      const categoryMeta = getSelectedMenuCategoryMeta(
-        `${choiceGroup.groupName} ${representativeDish?.dishName || ''} ${representativeDish?.preparationArea || ''}`,
-      );
-
-      return {
-        id: `group-${choiceGroup.id}`,
-        rowType: 'choice-group' as const,
-        categoryId: categoryMeta.id as SelectedMenuCategoryId,
-        categoryLabel: categoryMeta.label,
-        itemName: choiceGroup.groupName || 'Unnamed Choice Group',
-        itemType: 'Choice Group',
-        quantityPerGuest: getMenuEstimateChoiceQuantity(choiceGroup) / baselineGuestDivisor,
-        unit: getMenuEstimateChoiceUnit(choiceGroup),
-        costPerGuest,
-        readiness,
-        statusLabel: commercialStatus.label,
-        statusClassName: commercialStatus.className,
-        onEdit: () => openChoiceGroupEditor(choiceGroup.id),
-        onRemove: () => handleRemoveChoiceGroup(choiceGroup.id),
       };
     }),
   ];
@@ -3609,9 +3435,7 @@ export function MenuPackageBuilder({
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                           <span>{selectedAvailableDishIds.length} selected</span>
-                          <span>
-                            Active group: <span className="font-semibold text-slate-900">{activeChoiceGroup?.groupName || 'None selected'}</span>
-                          </span>
+                          <span>Sorted by fixed menu category</span>
                         </div>
                         {!viewMode ? (
                           <div className="flex flex-wrap items-center gap-2">
@@ -3623,11 +3447,11 @@ export function MenuPackageBuilder({
                             </button>
                             <button
                               type="button"
-                              onClick={() => openAddDishDialog(selectedAvailableDishIds)}
+                              onClick={handleAddSelectedToFixedItems}
                               disabled={selectedAvailableDishIds.length === 0}
                               className={compactPrimaryButtonClass}
                             >
-                              Add Selected
+                              Add Selected Dishes
                             </button>
                           </div>
                         ) : null}
@@ -3637,66 +3461,73 @@ export function MenuPackageBuilder({
                       {filteredAvailableDishes.length === 0 ? (
                         <div className="px-4 py-6 text-center text-sm text-slate-500">No dishes match the current filters.</div>
                       ) : (
-                        filteredAvailableDishes.map((dish) => {
-                          const assignmentLabel = getDishAssignmentLabel(dish.id);
-                          const isSelected = selectedAvailableDishIds.includes(dish.id);
-                          const readiness = getDishPackageReadiness(dish, recipeByDishId, purchaseItemsById);
-                          const defaultVariant = getDefaultPackageVariant(dish, units, recipeByDishId, purchaseItemsById);
-
-                          return (
-                            <div
-                              key={dish.id}
-                              className={`grid grid-cols-[22px_minmax(0,1fr)_70px_124px_72px] items-center gap-2 px-2 py-1.5 text-sm ${
-                                isSelected ? 'bg-orange-50' : assignmentLabel ? 'bg-slate-50' : 'bg-white'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleAvailableDishSelection(dish.id)}
-                                disabled={viewMode || Boolean(assignmentLabel) || !readiness.canAdd}
-                                title={readiness.canAdd ? undefined : readiness.reason}
-                                className="size-4"
-                              />
-                              <div className="min-w-0">
-                                <div className="whitespace-normal break-words font-medium text-slate-900">{dish.dishName}</div>
-                                <div className="text-[11px] text-slate-500">
-                                  {dish.category} | {dish.preparationArea.replace(/-/g, ' ')}
-                                </div>
-                              </div>
-                              <div className="truncate text-[11px] text-slate-600">
-                                {defaultVariant?.salesUnit || dish.unit || 'pcs'}
-                              </div>
-                              <div className="flex justify-end">
-                                <span
-                                  className={`inline-flex max-w-[120px] truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
-                                  title={readiness.reason}
-                                >
-                                  {readiness.label}
-                                </span>
-                              </div>
-                              <div className="flex justify-end">
-                                {assignmentLabel ? (
-                                  <span className="inline-flex max-w-[72px] truncate rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
-                                    {assignmentLabel}
-                                  </span>
-                                ) : viewMode ? (
-                                  <span className="text-[11px] text-slate-400">Open</span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => openAddDishDialog([dish.id])}
-                                    disabled={!readiness.canAdd}
-                                    title={readiness.canAdd ? 'Choose where to add this dish' : readiness.reason}
-                                    className={compactPrimaryButtonClass}
-                                  >
-                                    Add
-                                  </button>
-                                )}
-                              </div>
+                        groupedAvailableDishSections.map((section) => (
+                          <div key={section.id} className="border-b border-slate-100 last:border-b-0">
+                            <div className="bg-slate-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                              {section.label}
                             </div>
-                          );
-                        })
+                            {section.rows.map((dish) => {
+                              const assignmentLabel = getDishAssignmentLabel(dish.id);
+                              const isSelected = selectedAvailableDishIds.includes(dish.id);
+                              const readiness = getDishPackageReadiness(dish, recipeByDishId, purchaseItemsById);
+                              const defaultVariant = getDefaultPackageVariant(dish, units, recipeByDishId, purchaseItemsById);
+
+                              return (
+                                <div
+                                  key={dish.id}
+                                  className={`grid grid-cols-[22px_minmax(0,1fr)_70px_124px_92px] items-center gap-2 px-2 py-1.5 text-sm ${
+                                    isSelected ? 'bg-orange-50' : assignmentLabel ? 'bg-slate-50' : 'bg-white'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => toggleAvailableDishSelection(dish.id)}
+                                    disabled={viewMode || Boolean(assignmentLabel) || !readiness.canAdd}
+                                    title={readiness.canAdd ? undefined : readiness.reason}
+                                    className="size-4"
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="whitespace-normal break-words font-medium text-slate-900">{dish.dishName}</div>
+                                    <div className="text-[11px] text-slate-500">
+                                      {dish.category} | {dish.preparationArea.replace(/-/g, ' ')}
+                                    </div>
+                                  </div>
+                                  <div className="truncate text-[11px] text-slate-600">
+                                    {defaultVariant?.salesUnit || dish.unit || 'pcs'}
+                                  </div>
+                                  <div className="flex justify-end">
+                                    <span
+                                      className={`inline-flex max-w-[120px] truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
+                                      title={readiness.reason}
+                                    >
+                                      {readiness.label}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-end">
+                                    {assignmentLabel ? (
+                                      <span className="inline-flex max-w-[80px] truncate rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
+                                        {assignmentLabel}
+                                      </span>
+                                    ) : viewMode ? (
+                                      <span className="text-[11px] text-slate-400">Open</span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleQuickAddToFixedItems(dish.id)}
+                                        disabled={!readiness.canAdd}
+                                        title={readiness.canAdd ? 'Add this dish to the fixed menu' : readiness.reason}
+                                        className={compactPrimaryButtonClass}
+                                      >
+                                        Add
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))
                       )}
                     </div>
                   </section>
@@ -3704,9 +3535,9 @@ export function MenuPackageBuilder({
                   <section className="rounded border border-slate-200 bg-white">
                     <div className="flex items-center justify-between border-b border-slate-200 px-2.5 py-1.5">
                       <div>
-                        <h3 className="text-sm font-semibold text-slate-900">Selected Menu Package</h3>
+                        <h3 className="text-sm font-semibold text-slate-900">Selected Dishes by Menu Category</h3>
                         <div className="text-[11px] text-slate-500">
-                          Grouped by service category with cost-only visibility.
+                          Fixed-menu dishes are grouped automatically in service order.
                         </div>
                       </div>
                       {!viewMode ? (
@@ -3716,10 +3547,6 @@ export function MenuPackageBuilder({
                               Apply Suggestions
                             </button>
                           ) : null}
-                          <button type="button" onClick={handleAddChoiceGroup} className={compactPrimaryButtonClass}>
-                            <Plus className="h-4 w-4" />
-                            Group
-                          </button>
                         </div>
                       ) : null}
                     </div>
@@ -3737,14 +3564,26 @@ export function MenuPackageBuilder({
                               {section.rows.map((row) => (
                                 <div
                                   key={row.id}
-                                  className="grid grid-cols-[minmax(0,1.5fr)_92px_92px_96px_122px_78px] items-center gap-2 px-2 py-1.5 text-sm"
+                                  className="grid grid-cols-[minmax(0,1.7fr)_110px_96px_96px_122px_44px] items-center gap-2 px-2 py-1.5 text-sm"
                                 >
                                   <div className="min-w-0">
                                     <div className="whitespace-normal break-words font-medium text-slate-900">{row.itemName}</div>
-                                    <div className="text-[11px] text-slate-500">{row.itemType}</div>
+                                    <div className="text-[11px] text-slate-500">{row.itemDetail}</div>
                                   </div>
                                   <div className="text-right text-slate-900">
-                                    {row.quantityPerGuest.toFixed(2)}
+                                    {viewMode ? (
+                                      <>
+                                        {row.quantityPerGuest.toFixed(2)}
+                                      </>
+                                    ) : (
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={row.quantityPerGuest}
+                                        onChange={(event) => row.onQuantityChange(Number(event.target.value))}
+                                        className={`${compactInputClass} text-right`}
+                                      />
+                                    )}
                                     <div className="text-[11px] text-slate-500">{row.unit || 'pcs'}</div>
                                   </div>
                                   <div className="text-right font-medium text-slate-900">Rs. {row.costPerGuest.toFixed(2)}</div>
@@ -3758,14 +3597,7 @@ export function MenuPackageBuilder({
                                       {row.statusLabel}
                                     </span>
                                   </div>
-                                  <div className="flex justify-end gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={row.onEdit}
-                                      className="inline-flex h-7 items-center rounded border border-slate-300 px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                                    >
-                                      Edit
-                                    </button>
+                                  <div className="flex justify-end">
                                     {!viewMode ? (
                                       <button
                                         type="button"
@@ -3783,155 +3615,6 @@ export function MenuPackageBuilder({
                           </div>
                         ))
                       )}
-                    </div>
-
-                    <div className="border-t border-slate-200">
-                      <section className="border-b border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => setFixedItemsOpen((current) => !current)}
-                          className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left"
-                        >
-                          <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                            {fixedItemsOpen ? <ChevronDown className="size-3.5 text-slate-500" /> : <ChevronRight className="size-3.5 text-slate-500" />}
-                            Fixed Item Controls
-                          </span>
-                          <span className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
-                            {packageDishes.length} items
-                          </span>
-                        </button>
-                        <div className={fixedItemsOpen ? 'max-h-[180px] overflow-auto border-t border-slate-100' : 'hidden'}>
-                          {packageDishes.length === 0 ? (
-                            <div className="px-4 py-4 text-center text-sm text-slate-500">No fixed items selected.</div>
-                          ) : (
-                            <div className="min-w-[620px] divide-y divide-slate-100">
-                              {packageDishes.map((dish, index) => {
-                                const readiness = getDishReadiness(dish.dishId);
-                                return (
-                                  <div
-                                    key={`${dish.dishId}-${index}`}
-                                    className="grid grid-cols-[minmax(0,1fr)_160px_88px_132px_28px] items-center gap-2 px-2 py-1.5 text-sm"
-                                  >
-                                    <div className="min-w-0">
-                                      <div className="truncate font-medium text-slate-900">{dish.dishName}</div>
-                                      <div className="truncate text-[11px] text-slate-500">{dish.preparationArea.replace(/-/g, ' ')}</div>
-                                    </div>
-                                    <select
-                                      value={dish.variantId || ''}
-                                      onChange={(event) => handleUpdateDish(index, 'variantId', event.target.value)}
-                                      disabled={viewMode}
-                                      className={compactInputClass}
-                                    >
-                                      {(packageEligibleDishes.find((item) => item.id === dish.dishId)
-                                        ? getDishVariantOptions(packageEligibleDishes.find((item) => item.id === dish.dishId)!, units, recipeByDishId, purchaseItemsById)
-                                        : []
-                                      ).map((variant) => (
-                                        <option key={variant.id} value={variant.id}>
-                                          {variant.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      value={dish.quantityPerHead}
-                                      onChange={(event) => handleUpdateDish(index, 'quantityPerHead', Number(event.target.value))}
-                                      disabled={viewMode}
-                                      className={`${compactInputClass} text-right`}
-                                    />
-                                    <span
-                                      className={`inline-flex justify-center truncate rounded border px-1.5 py-0.5 text-[11px] font-medium ${getDishReadinessBadgeClass(readiness)}`}
-                                      title={readiness.reason}
-                                    >
-                                      {readiness.label}
-                                    </span>
-                                    {!viewMode ? (
-                                      <button
-                                        onClick={() => handleRemoveDish(index)}
-                                        className="inline-flex size-7 items-center justify-center rounded text-red-600 hover:bg-red-50"
-                                        title="Remove fixed item"
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </button>
-                                    ) : (
-                                      <span />
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      </section>
-
-                      <section>
-                        <div className="flex items-center justify-between px-2.5 py-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setChoiceGroupsOpen((current) => !current)}
-                            className="flex items-center gap-2 text-left text-sm font-semibold text-slate-900"
-                          >
-                            {choiceGroupsOpen ? <ChevronDown className="size-3.5 text-slate-500" /> : <ChevronRight className="size-3.5 text-slate-500" />}
-                            Choice Group Controls
-                          </button>
-                          {!viewMode ? (
-                            <div className="flex items-center gap-1">
-                              {activeChoiceGroup ? (
-                                <button type="button" onClick={() => openChoiceGroupEditor(activeChoiceGroup.id)} className={compactOutlineAccentButtonClass}>
-                                  Edit Active
-                                </button>
-                              ) : null}
-                              <button type="button" onClick={handleAddChoiceGroup} className={compactPrimaryButtonClass}>
-                                <Plus className="h-4 w-4" />
-                                Group
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className={choiceGroupsOpen ? 'max-h-[220px] overflow-auto border-t border-slate-100' : 'hidden'}>
-                          {choiceGroups.length === 0 ? (
-                            <div className="px-4 py-4 text-center text-sm text-slate-500">No choice groups.</div>
-                          ) : (
-                            <div className="divide-y divide-slate-100">
-                              {choiceGroups.map((choiceGroup) => (
-                                <div
-                                  key={choiceGroup.id}
-                                  className={`grid grid-cols-[minmax(0,1fr)_72px_84px_122px] items-center gap-2 px-2 py-1.5 text-sm ${
-                                    activeChoiceGroupId === choiceGroup.id ? 'bg-orange-50' : 'bg-white'
-                                  }`}
-                                >
-                                  <div className="min-w-0">
-                                    <div className="truncate font-medium text-slate-900">{choiceGroup.groupName || 'Unnamed Group'}</div>
-                                    <div className="truncate text-[11px] text-slate-500" title={formatChoiceGroupDishSummary(choiceGroup, 12)}>
-                                      {formatChoiceGroupDishSummary(choiceGroup)}
-                                    </div>
-                                  </div>
-                                  <div className="text-xs text-slate-600">{choiceGroup.required ? 'Required' : 'Optional'}</div>
-                                  <div className="text-xs text-slate-600">
-                                    {choiceGroup.minSelect}/{choiceGroup.maxSelect}
-                                  </div>
-                                  <div className="flex justify-end gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => setActiveChoiceGroupId(choiceGroup.id)}
-                                      className="inline-flex h-7 items-center rounded border border-slate-300 px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                                    >
-                                      Use
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => openChoiceGroupEditor(choiceGroup.id)}
-                                      className="inline-flex h-7 items-center rounded border border-orange-300 px-2 text-[11px] font-medium text-orange-700 hover:bg-orange-50"
-                                    >
-                                      Edit
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </section>
                     </div>
                   </section>
 

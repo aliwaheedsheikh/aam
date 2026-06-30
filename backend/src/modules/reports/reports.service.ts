@@ -1,64 +1,61 @@
 import { Injectable } from "@nestjs/common";
+import { BookingStatus } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 
-const CONFIRMED_BOOKING_STATUSES = ["CONFIRMED", "COMPLETED"] as const;
+const CONFIRMED_BOOKING_STATUSES = [BookingStatus.CONFIRMED, BookingStatus.COMPLETED] as const;
 
 @Injectable()
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getReservationSummary() {
-    const [confirmedCount, tentativeCount, totals] = await Promise.all([
-      this.prisma.booking.count({
-        where: {
-          status: { in: [...CONFIRMED_BOOKING_STATUSES] },
-        },
+    // A-5: Consolidated from 4 DB round-trips (3 in Promise.all + 1 groupBy) to
+    // 2 parallel queries: one groupBy on status for totals, one groupBy on venueId.
+    const [statusGroups, venueGroups] = await Promise.all([
+      this.prisma.booking.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+        _sum: { totalAmount: true, paidAmount: true, balanceAmount: true },
       }),
-      this.prisma.booking.count({
-        where: {
-          status: "TENTATIVE",
-        },
-      }),
-      this.prisma.booking.aggregate({
-        where: {
-          status: { in: [...CONFIRMED_BOOKING_STATUSES] },
-        },
-        _sum: {
-          totalAmount: true,
-          paidAmount: true,
-          balanceAmount: true,
-        },
+      this.prisma.booking.groupBy({
+        by: ["venueId"],
+        where: { status: { in: [...CONFIRMED_BOOKING_STATUSES] } },
+        _count: { _all: true },
+        _sum: { guestCount: true, totalAmount: true },
+        orderBy: { _count: { venueId: "desc" } },
       }),
     ]);
 
-    const venueBreakdown = await this.prisma.booking.groupBy({
-      by: ["venueId"],
-      where: {
-        status: { in: [...CONFIRMED_BOOKING_STATUSES] },
-      },
-      _count: {
-        _all: true,
-      },
-      _sum: {
-        guestCount: true,
-        totalAmount: true,
-      },
-      orderBy: {
-        _count: {
-          venueId: "desc",
-        },
-      },
-    });
+    const confirmedGroups = statusGroups.filter((g) =>
+      (CONFIRMED_BOOKING_STATUSES as readonly string[]).includes(g.status),
+    );
+    const tentativeGroup = statusGroups.find((g) => g.status === BookingStatus.TENTATIVE);
+
+    const confirmedCount = confirmedGroups.reduce((acc, g) => acc + g._count._all, 0);
+    const tentativeCount = tentativeGroup?._count._all ?? 0;
+
+    const totalRevenue = confirmedGroups.reduce(
+      (acc, g) => acc + this.toNumber(g._sum.totalAmount),
+      0,
+    );
+    const totalCollected = confirmedGroups.reduce(
+      (acc, g) => acc + this.toNumber(g._sum.paidAmount),
+      0,
+    );
+    const totalOutstanding = confirmedGroups.reduce(
+      (acc, g) => acc + this.toNumber(g._sum.balanceAmount),
+      0,
+    );
 
     return {
       summary: {
         confirmedBookings: confirmedCount,
         tentativeBookings: tentativeCount,
-        totalRevenue: this.toNumber(totals._sum.totalAmount),
-        totalCollected: this.toNumber(totals._sum.paidAmount),
-        totalOutstanding: this.toNumber(totals._sum.balanceAmount),
+        totalRevenue,
+        totalCollected,
+        totalOutstanding,
       },
-      venueBreakdown: venueBreakdown.map((venue) => ({
+      venueBreakdown: venueGroups.map((venue) => ({
         venueId: venue.venueId,
         bookings: venue._count._all,
         guestCount: venue._sum.guestCount ?? 0,

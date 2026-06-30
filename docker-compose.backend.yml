@@ -5,22 +5,45 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: venueops_erp
-      POSTGRES_USER: venueops
-      POSTGRES_PASSWORD: venueops_dev_password
+      # L-1: Use env vars, never hardcoded credentials.
+      # Set POSTGRES_USER and POSTGRES_PASSWORD in backend/.env (not committed to git).
+      POSTGRES_USER: ${POSTGRES_USER:-venueops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
       - "5432:5432"
     volumes:
       - venueops_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-venueops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  redis:
-    image: redis:7-alpine
-    container_name: venueops-redis
+  # L-4/D-1: Backend service now containerised via backend/Dockerfile.
+  # Previously launched manually via a PowerShell script with hardcoded paths.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: venueops-backend
     restart: unless-stopped
+    env_file:
+      - ./backend/.env
     ports:
-      - "6379:6379"
-    volumes:
-      - venueops_redis_data:/data
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # D-2: Healthcheck lets orchestrators wait until the backend is fully ready.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 -O- http://localhost:3001/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+# L-6: Redis service REMOVED — bullmq and ioredis are unused dead dependencies.
+# Redis will be re-added when an actual job queue is implemented.
 
 volumes:
   venueops_postgres_data:
-  venueops_redis_data:
